@@ -21,6 +21,10 @@ def reliability_rankings_csv_path(processed_dir: Path, granularity_minutes: int)
     return processed_dir / f"reliability_rankings_{granularity_minutes}min.csv"
 
 
+def events_csv_path(processed_dir: Path) -> Path:
+    return processed_dir / "events.csv"
+
+
 def save_csv(df: pd.DataFrame, path: Path) -> Path:
     ensure_parent_dir(path)
     df.to_csv(path, index=False)

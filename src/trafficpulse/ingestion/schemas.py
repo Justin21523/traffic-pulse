@@ -24,3 +24,16 @@ class TrafficObservation(BaseModel):
     volume: Optional[float] = None
     occupancy_pct: Optional[float] = None
 
+
+class TrafficEvent(BaseModel):
+    event_id: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    event_type: Optional[str] = None
+    description: Optional[str] = None
+    road_name: Optional[str] = None
+    direction: Optional[str] = None
+    severity: Optional[float] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    city: Optional[str] = None

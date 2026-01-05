@@ -49,6 +49,28 @@ def _coerce_float(value: Any) -> Optional[float]:
         return None
 
 
+def _get_by_path(record: dict[str, Any], path: str) -> Any:
+    if not path:
+        return None
+    if "." not in path:
+        return record.get(path)
+    current: Any = record
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _coerce_datetime_utc(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    try:
+        return to_utc(parse_datetime(str(value)))
+    except Exception:
+        return None
+
+
 class TdxTrafficClient:
     def __init__(
         self,
@@ -133,6 +155,20 @@ class TdxTrafficClient:
             all_items.extend(self._fetch_vd_city_raw(city=city, start=start, end=end))
         return all_items
 
+    def fetch_events_raw(
+        self,
+        start: datetime,
+        end: datetime,
+        cities: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        config = self.config.ingestion.events
+        selected_cities = cities or config.cities
+
+        all_items: list[dict[str, Any]] = []
+        for city in selected_cities:
+            all_items.extend(self._fetch_events_city_raw(city=city, start=start, end=end))
+        return all_items
+
     def download_vd(
         self,
         start: datetime,
@@ -180,6 +216,37 @@ class TdxTrafficClient:
 
         return segments, observations
 
+    def download_events(
+        self,
+        start: datetime,
+        end: datetime,
+        cities: Optional[list[str]] = None,
+    ) -> pd.DataFrame:
+        config = self.config.ingestion.events
+        selected_cities = cities or config.cities
+
+        rows: list[dict[str, Any]] = []
+        for city in selected_cities:
+            raw = self._fetch_events_city_raw(city=city, start=start, end=end)
+            rows.extend(self._normalize_event_records(raw, city=city))
+
+        events = pd.DataFrame(rows)
+        if events.empty:
+            return events
+
+        events["start_time"] = pd.to_datetime(events["start_time"], errors="coerce", utc=True)
+        if "end_time" in events.columns:
+            events["end_time"] = pd.to_datetime(events["end_time"], errors="coerce", utc=True)
+        events = events.dropna(subset=["event_id", "start_time"])
+
+        def first_non_null(series: pd.Series) -> Any:
+            non_null = series.dropna()
+            return non_null.iloc[0] if not non_null.empty else None
+
+        events = events.groupby("event_id", as_index=False).agg(first_non_null)
+        events = events.sort_values(["start_time", "event_id"]).reset_index(drop=True)
+        return events
+
     def _fetch_vd_city_raw(self, city: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
         chunk_minutes = int(self.config.ingestion.query_chunk_minutes)
         if chunk_minutes <= 0:
@@ -215,6 +282,43 @@ class TdxTrafficClient:
 
         raise TdxClientError(f"All VD endpoint templates failed for city={city}: {last_error}") from last_error
 
+    def _fetch_events_city_raw(self, city: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        chunk_minutes = int(self.config.ingestion.query_chunk_minutes)
+        if chunk_minutes <= 0:
+            raise ValueError("ingestion.query_chunk_minutes must be > 0")
+
+        results: list[dict[str, Any]] = []
+        cursor = start
+        while cursor < end:
+            chunk_end = min(cursor + timedelta(minutes=chunk_minutes), end)
+            results.extend(self._fetch_events_city_chunk_raw(city=city, start=cursor, end=chunk_end))
+            cursor = chunk_end
+        return results
+
+    def _fetch_events_city_chunk_raw(
+        self, city: str, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        config = self.config.ingestion.events
+        page_size = int(config.paging.page_size)
+        if page_size <= 0:
+            raise ValueError("ingestion.events.paging.page_size must be > 0")
+
+        filter_text = _build_time_filter(config.start_time_field, start=start, end=end)
+        base_params: dict[str, Any] = {"$format": "JSON", "$filter": filter_text, "$top": page_size}
+
+        last_error: Optional[Exception] = None
+        for template in config.endpoint_templates:
+            endpoint = template.format(city=city)
+            try:
+                return self._fetch_paginated(endpoint=endpoint, base_params=base_params, page_size=page_size)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                continue
+
+        raise TdxClientError(
+            f"All event endpoint templates failed for city={city}: {last_error}"
+        ) from last_error
+
     def _fetch_paginated(
         self, endpoint: str, base_params: dict[str, Any], page_size: int
     ) -> list[dict[str, Any]]:
@@ -229,6 +333,40 @@ class TdxTrafficClient:
                 break
             skip += page_size
         return items
+
+    def _normalize_event_records(self, records: list[dict[str, Any]], city: str) -> list[dict[str, Any]]:
+        config = self.config.ingestion.events
+
+        rows: list[dict[str, Any]] = []
+        for record in records:
+            event_id = _get_by_path(record, config.id_field)
+            if event_id is None:
+                continue
+
+            start_time = _coerce_datetime_utc(_get_by_path(record, config.start_time_field))
+            if start_time is None:
+                continue
+
+            end_time = _coerce_datetime_utc(_get_by_path(record, config.end_time_field))
+
+            rows.append(
+                {
+                    "event_id": str(event_id),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "event_type": _get_by_path(record, config.type_field),
+                    "description": _get_by_path(record, config.description_field),
+                    "road_name": _get_by_path(record, config.road_name_field),
+                    "direction": _get_by_path(record, config.direction_field),
+                    "severity": _coerce_float(_get_by_path(record, config.severity_field)),
+                    "lat": _coerce_float(_get_by_path(record, config.lat_field)),
+                    "lon": _coerce_float(_get_by_path(record, config.lon_field)),
+                    "city": city,
+                    "source": "tdx",
+                }
+            )
+
+        return rows
 
     def _normalize_vd_records(
         self, records: list[dict[str, Any]], city: str
@@ -358,5 +496,16 @@ def build_vd_dataset(
     client = TdxTrafficClient()
     try:
         return client.download_vd(start=start, end=end, cities=cities)
+    finally:
+        client.close()
+
+
+def build_events_dataset(
+    start: datetime, end: datetime, cities: Optional[list[str]] = None
+) -> pd.DataFrame:
+    configure_logging()
+    client = TdxTrafficClient()
+    try:
+        return client.download_events(start=start, end=end, cities=cities)
     finally:
         client.close()

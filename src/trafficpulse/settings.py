@@ -82,10 +82,38 @@ class VdIngestionSection(BaseModel):
     paging: VdPagingSection = Field(default_factory=VdPagingSection)
 
 
+class EventsPagingSection(BaseModel):
+    page_size: int = 1000
+
+
+class EventsIngestionSection(BaseModel):
+    endpoint_templates: list[str] = Field(
+        default_factory=lambda: [
+            "Traffic/TrafficEvent/History/City/{city}",
+            "Traffic/TrafficEvent/Live/City/{city}",
+        ]
+    )
+    cities: list[str] = Field(default_factory=lambda: ["Taipei"])
+
+    start_time_field: str = "StartTime"
+    end_time_field: str = "EndTime"
+    id_field: str = "TrafficEventID"
+    type_field: str = "EventType"
+    description_field: str = "Description"
+    road_name_field: str = "RoadName"
+    direction_field: str = "Direction"
+    severity_field: str = "Severity"
+    lat_field: str = "PositionLat"
+    lon_field: str = "PositionLon"
+
+    paging: EventsPagingSection = Field(default_factory=EventsPagingSection)
+
+
 class IngestionSection(BaseModel):
     dataset: str = "vd"
     query_chunk_minutes: int = 60
     vd: VdIngestionSection = Field(default_factory=VdIngestionSection)
+    events: EventsIngestionSection = Field(default_factory=EventsIngestionSection)
 
 
 class PreprocessingSection(BaseModel):

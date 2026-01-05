@@ -46,6 +46,14 @@ pip install -e .
 python scripts/build_dataset.py --start 2026-01-01T00:00:00+08:00 --end 2026-01-01T03:00:00+08:00 --cities Taipei
 ```
 
+## Build Traffic Events (Phase 3)
+
+Traffic events/incident feeds are configurable under `ingestion.events` in `configs/config.yaml`.
+
+```bash
+python scripts/build_events.py --start 2026-01-01T00:00:00+08:00 --end 2026-01-01T06:00:00+08:00 --cities Taipei
+```
+
 ## Aggregate Observations (Phase 1)
 
 Convert `5-min` observations into `15-min` or `hourly` series (config-driven):

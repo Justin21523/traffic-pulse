@@ -51,6 +51,27 @@ ingestion:
       lon_field: PositionLon
     paging:
       page_size: 1000
+  events:
+    # Traffic events/incidents (field names can vary; keep this config as the source of truth).
+    # The client will try these endpoints in order.
+    endpoint_templates:
+      - Traffic/TrafficEvent/History/City/{city}
+      - Traffic/TrafficEvent/Live/City/{city}
+    cities:
+      - Taipei
+    start_time_field: StartTime
+    end_time_field: EndTime
+    id_field: TrafficEventID
+    type_field: EventType
+    description_field: Description
+    road_name_field: RoadName
+    direction_field: Direction
+    severity_field: Severity
+    # Lat/Lon fields can also be configured as dot-paths (e.g., "Position.PositionLat").
+    lat_field: PositionLat
+    lon_field: PositionLon
+    paging:
+      page_size: 1000
 
 preprocessing:
   source_granularity_minutes: 5
