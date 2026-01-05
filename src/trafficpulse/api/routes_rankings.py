@@ -7,7 +7,11 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from trafficpulse.analytics.reliability import compute_reliability_rankings, reliability_spec_from_config
+from trafficpulse.analytics.reliability import (
+    apply_reliability_overrides,
+    compute_reliability_rankings,
+    reliability_spec_from_config,
+)
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
@@ -43,6 +47,11 @@ def reliability_rankings(
     minutes: Optional[int] = Query(
         default=None, ge=1, description="Observation granularity in minutes (default: config)."
     ),
+    congestion_speed_threshold_kph: Optional[float] = Query(default=None, gt=0),
+    min_samples: Optional[int] = Query(default=None, ge=1),
+    weight_mean_speed: Optional[float] = Query(default=None, ge=0),
+    weight_speed_std: Optional[float] = Query(default=None, ge=0),
+    weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
 ) -> list[ReliabilityRankingRow]:
     config = get_config()
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
@@ -91,7 +100,17 @@ def reliability_rankings(
                 end_dt = datetime.now(timezone.utc)
             start_dt = end_dt - timedelta(hours=window_hours)
 
-    spec = reliability_spec_from_config(config)
+    try:
+        spec = apply_reliability_overrides(
+            reliability_spec_from_config(config),
+            congestion_speed_threshold_kph=congestion_speed_threshold_kph,
+            min_samples=min_samples,
+            weight_mean_speed=weight_mean_speed,
+            weight_speed_std=weight_speed_std,
+            weight_congestion_frequency=weight_congestion_frequency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     backend = duckdb_backend(config)
     if backend is not None and parquet_path.exists():

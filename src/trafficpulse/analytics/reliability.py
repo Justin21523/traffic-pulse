@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Optional
 
@@ -201,3 +201,46 @@ def compute_reliability_rankings(
         ranked = ranked.head(int(limit))
     return ranked
 
+
+def apply_reliability_overrides(
+    spec: ReliabilitySpec,
+    *,
+    congestion_speed_threshold_kph: Optional[float] = None,
+    min_samples: Optional[int] = None,
+    weight_mean_speed: Optional[float] = None,
+    weight_speed_std: Optional[float] = None,
+    weight_congestion_frequency: Optional[float] = None,
+) -> ReliabilitySpec:
+    updated = spec
+    if congestion_speed_threshold_kph is not None:
+        if float(congestion_speed_threshold_kph) <= 0:
+            raise ValueError("congestion_speed_threshold_kph must be > 0")
+        updated = replace(updated, congestion_speed_threshold_kph=float(congestion_speed_threshold_kph))
+    if min_samples is not None:
+        if int(min_samples) <= 0:
+            raise ValueError("min_samples must be > 0")
+        updated = replace(updated, min_samples=int(min_samples))
+
+    weights = {
+        "weight_mean_speed": weight_mean_speed,
+        "weight_speed_std": weight_speed_std,
+        "weight_congestion_frequency": weight_congestion_frequency,
+    }
+    if any(value is not None for value in weights.values()):
+        mean = float(weight_mean_speed) if weight_mean_speed is not None else updated.weight_mean_speed
+        std = float(weight_speed_std) if weight_speed_std is not None else updated.weight_speed_std
+        cong = (
+            float(weight_congestion_frequency)
+            if weight_congestion_frequency is not None
+            else updated.weight_congestion_frequency
+        )
+        if mean < 0 or std < 0 or cong < 0:
+            raise ValueError("reliability weights must be >= 0")
+        updated = replace(
+            updated,
+            weight_mean_speed=mean,
+            weight_speed_std=std,
+            weight_congestion_frequency=cong,
+        ).normalized_weights()
+
+    return updated

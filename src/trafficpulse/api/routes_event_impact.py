@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from trafficpulse.analytics.event_impact import (
+    apply_event_impact_overrides,
     compute_event_impact,
     event_impact_spec_from_config,
     select_nearby_segments,
@@ -166,10 +167,31 @@ def get_event_impact(
     minutes: Optional[int] = Query(default=None, ge=1),
     radius_meters: Optional[float] = Query(default=None, gt=0),
     max_segments: Optional[int] = Query(default=None, ge=1, le=5000),
+    baseline_window_minutes: Optional[int] = Query(default=None, ge=1),
+    end_time_fallback_minutes: Optional[int] = Query(default=None, ge=1),
+    recovery_horizon_minutes: Optional[int] = Query(default=None, ge=1),
+    recovery_ratio: Optional[float] = Query(default=None, gt=0, le=1.0),
+    speed_weighting: Optional[str] = Query(default=None),
+    min_baseline_points: Optional[int] = Query(default=None, ge=1),
+    min_event_points: Optional[int] = Query(default=None, ge=1),
     include_timeseries: bool = Query(default=False),
 ) -> EventImpactSummary:
     config = get_config()
-    spec = event_impact_spec_from_config(config)
+    try:
+        spec = apply_event_impact_overrides(
+            event_impact_spec_from_config(config),
+            radius_meters=radius_meters,
+            max_segments=max_segments,
+            baseline_window_minutes=baseline_window_minutes,
+            end_time_fallback_minutes=end_time_fallback_minutes,
+            recovery_horizon_minutes=recovery_horizon_minutes,
+            recovery_ratio=recovery_ratio,
+            speed_weighting=speed_weighting,
+            min_baseline_points=min_baseline_points,
+            min_event_points=min_event_points,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     event = _load_event_or_404(event_id)
     segments = _load_segments_or_404()
@@ -200,8 +222,8 @@ def get_event_impact(
         segments,
         lat=float(event_lat),
         lon=float(event_lon),
-        radius_meters=float(radius_meters or spec.radius_meters),
-        max_segments=int(max_segments or spec.max_segments),
+        radius_meters=float(spec.radius_meters),
+        max_segments=int(spec.max_segments),
     )
     if nearby.empty:
         raise HTTPException(status_code=400, detail="No nearby segments found within radius.")

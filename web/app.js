@@ -11,6 +11,10 @@ const API_BASE = (() => {
 const statusEl = document.getElementById("status");
 const apiBaseEl = document.getElementById("api-base");
 
+const sidebarEl = document.getElementById("sidebar");
+const sidebarResizerEl = document.getElementById("sidebar-resizer");
+const chartResizerEl = document.getElementById("chart-resizer");
+
 const segmentSearchEl = document.getElementById("segment-search");
 const segmentSelectEl = document.getElementById("segment-select");
 const segmentInfoEl = document.getElementById("segment-info");
@@ -38,9 +42,77 @@ const loadHotspotsButton = document.getElementById("load-hotspots");
 const clearHotspotsButton = document.getElementById("clear-hotspots");
 const hotspotInfoEl = document.getElementById("hotspot-info");
 
+const toggleAnomaliesEl = document.getElementById("toggle-anomalies");
+const toggleHotspotsEl = document.getElementById("toggle-hotspots");
+const toggleEventsEl = document.getElementById("toggle-events");
+const toggleImpactEl = document.getElementById("toggle-impact");
+
+const reliabilityThresholdEl = document.getElementById("reliability-threshold");
+const reliabilityMinSamplesEl = document.getElementById("reliability-min-samples");
+const reliabilityWeightMeanEl = document.getElementById("reliability-weight-mean");
+const reliabilityWeightStdEl = document.getElementById("reliability-weight-std");
+const reliabilityWeightCongEl = document.getElementById("reliability-weight-cong");
+
+const anomaliesWindowEl = document.getElementById("anomalies-window");
+const anomaliesZEl = document.getElementById("anomalies-z");
+const anomaliesDirectionEl = document.getElementById("anomalies-direction");
+const anomaliesMaxGapEl = document.getElementById("anomalies-max-gap");
+const anomaliesMinEventPointsEl = document.getElementById("anomalies-min-event-points");
+
+const impactRadiusEl = document.getElementById("impact-radius");
+const impactMaxSegmentsEl = document.getElementById("impact-max-segments");
+const impactBaselineMinutesEl = document.getElementById("impact-baseline-minutes");
+const impactRecoveryMinutesEl = document.getElementById("impact-recovery-minutes");
+const impactRecoveryRatioEl = document.getElementById("impact-recovery-ratio");
+const impactWeightingEl = document.getElementById("impact-weighting");
+const impactEndFallbackEl = document.getElementById("impact-end-fallback");
+const impactMinBaselineEl = document.getElementById("impact-min-baseline");
+const impactMinEventEl = document.getElementById("impact-min-event");
+
+const applySettingsButton = document.getElementById("apply-settings");
+const resetSettingsButton = document.getElementById("reset-settings");
+
+const shortcutsOverlayEl = document.getElementById("shortcuts-overlay");
+const closeShortcutsButton = document.getElementById("close-shortcuts");
+
 const chartEl = document.getElementById("chart");
 
 apiBaseEl.textContent = API_BASE;
+
+const UI_STORAGE_KEY = "trafficpulse.ui.v1";
+
+function loadUiState() {
+  try {
+    const raw = localStorage.getItem(UI_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function saveUiState(state) {
+  try {
+    localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(state));
+  } catch (err) {
+    // ignore
+  }
+}
+
+function getNested(obj, path, fallback) {
+  const parts = path.split(".");
+  let current = obj;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || !(part in current)) return fallback;
+    current = current[part];
+  }
+  return current;
+}
+
+function setCssVar(name, value) {
+  document.documentElement.style.setProperty(name, value);
+}
 
 const map = L.map("map", { zoomControl: true }).setView([25.033, 121.5654], 12);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -52,6 +124,14 @@ const markers = L.layerGroup().addTo(map);
 const eventMarkers = L.layerGroup().addTo(map);
 const impactSegmentsLayer = L.layerGroup().addTo(map);
 const hotspotsLayer = L.layerGroup().addTo(map);
+
+let uiDefaults = null;
+let uiState = loadUiState();
+
+let showAnomalies = getNested(uiState, "overlays.anomalies", true);
+let showHotspots = getNested(uiState, "overlays.hotspots", true);
+let showEvents = getNested(uiState, "overlays.events", true);
+let showImpact = getNested(uiState, "overlays.impact", true);
 
 let segments = [];
 let segmentsById = new Map();
@@ -68,9 +148,657 @@ let eventMarkerById = new Map();
 let selectedEventId = null;
 
 let hotspotRows = [];
+let hotspotsLoaded = false;
+let eventsLoaded = false;
+let rankingsLoaded = false;
+
+let lastTimeseries = { entity: null, range: null, minutes: null, points: [], anomalies: null };
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setLayerVisible(layer, visible) {
+  if (visible) {
+    if (!map.hasLayer(layer)) layer.addTo(map);
+  } else if (map.hasLayer(layer)) {
+    map.removeLayer(layer);
+  }
+}
+
+function applyOverlayVisibility() {
+  setLayerVisible(hotspotsLayer, Boolean(showHotspots));
+  setLayerVisible(eventMarkers, Boolean(showEvents));
+  setLayerVisible(impactSegmentsLayer, Boolean(showImpact));
+}
+
+function applyLayoutFromState() {
+  const sidebarWidth = getNested(uiState, "layout.sidebarWidthPx", null);
+  if (typeof sidebarWidth === "number" && Number.isFinite(sidebarWidth)) {
+    setCssVar("--sidebar-width", `${Math.round(sidebarWidth)}px`);
+  }
+
+  const chartHeight = getNested(uiState, "layout.chartHeightPx", null);
+  if (typeof chartHeight === "number" && Number.isFinite(chartHeight)) {
+    setCssVar("--chart-height", `${Math.round(chartHeight)}px`);
+  }
+}
+
+let _layoutResizeRaf = null;
+function scheduleLayoutResize() {
+  if (_layoutResizeRaf != null) return;
+  _layoutResizeRaf = window.requestAnimationFrame(() => {
+    _layoutResizeRaf = null;
+    try {
+      map.invalidateSize({ animate: false });
+    } catch (err) {
+      // ignore
+    }
+    try {
+      if (chartEl && typeof Plotly !== "undefined" && Plotly.Plots && Plotly.Plots.resize) {
+        Plotly.Plots.resize(chartEl);
+      }
+    } catch (err) {
+      // ignore
+    }
+  });
+}
+
+function initResizer(element, { axis, minPx, maxPx, onCommit }) {
+  if (!element) return;
+  let dragging = false;
+  let startPos = 0;
+  let startValue = 0;
+  let currentValue = 0;
+
+  const onPointerMove = (ev) => {
+    if (!dragging) return;
+    const delta = axis === "x" ? ev.clientX - startPos : ev.clientY - startPos;
+    currentValue = clamp(startValue + delta, minPx, maxPx);
+    onCommit(currentValue, { live: true });
+    ev.preventDefault();
+  };
+
+  const onPointerUp = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    onCommit(currentValue, { live: false });
+    element.releasePointerCapture(ev.pointerId);
+    document.removeEventListener("pointermove", onPointerMove);
+    document.removeEventListener("pointerup", onPointerUp);
+    ev.preventDefault();
+  };
+
+  element.addEventListener("pointerdown", (ev) => {
+    dragging = true;
+    startPos = axis === "x" ? ev.clientX : ev.clientY;
+    if (axis === "x") {
+      startValue = sidebarEl.getBoundingClientRect().width;
+    } else {
+      const chartContainer = chartEl.closest(".chart") || chartEl;
+      startValue = chartContainer.getBoundingClientRect().height;
+    }
+    currentValue = startValue;
+    element.setPointerCapture(ev.pointerId);
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", onPointerUp);
+    ev.preventDefault();
+  });
+}
+
+function initLayoutResizers() {
+  initResizer(sidebarResizerEl, {
+    axis: "x",
+    minPx: 280,
+    maxPx: 700,
+    onCommit: (value, { live }) => {
+      setCssVar("--sidebar-width", `${Math.round(value)}px`);
+      scheduleLayoutResize();
+      uiState.layout = uiState.layout || {};
+      uiState.layout.sidebarWidthPx = Math.round(value);
+      if (!live) saveUiState(uiState);
+    },
+  });
+
+  initResizer(chartResizerEl, {
+    axis: "y",
+    minPx: 200,
+    maxPx: 700,
+    onCommit: (value, { live }) => {
+      setCssVar("--chart-height", `${Math.round(value)}px`);
+      scheduleLayoutResize();
+      uiState.layout = uiState.layout || {};
+      uiState.layout.chartHeightPx = Math.round(value);
+      if (!live) saveUiState(uiState);
+    },
+  });
+}
+
+function initPanelCollapse() {
+  const panels = Array.from(document.querySelectorAll(".panel[data-panel-id]"));
+  for (const panel of panels) {
+    const panelId = panel.getAttribute("data-panel-id");
+    const title = panel.querySelector(".panel-title");
+    if (!panelId || !title) continue;
+
+    const collapsed = Boolean(getNested(uiState, `panels.${panelId}.collapsed`, false));
+    if (collapsed) panel.classList.add("collapsed");
+
+    title.addEventListener("click", () => {
+      panel.classList.toggle("collapsed");
+      const nowCollapsed = panel.classList.contains("collapsed");
+      uiState.panels = uiState.panels || {};
+      uiState.panels[panelId] = uiState.panels[panelId] || {};
+      uiState.panels[panelId].collapsed = nowCollapsed;
+      saveUiState(uiState);
+    });
+  }
+}
+
+function parseNumberValue(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+  const num = Number(trimmed);
+  return Number.isFinite(num) ? num : null;
+}
+
+function parseIntValue(text) {
+  const num = parseNumberValue(text);
+  if (num == null) return null;
+  return Math.trunc(num);
+}
+
+function setInputValue(el, value) {
+  if (!el) return;
+  el.value = value == null ? "" : String(value);
+}
+
+function setInputPlaceholder(el, value) {
+  if (!el) return;
+  el.placeholder = value == null ? "" : String(value);
+}
+
+function reliabilityOverridesFromForm() {
+  return {
+    congestion_speed_threshold_kph: parseNumberValue(reliabilityThresholdEl.value),
+    min_samples: parseIntValue(reliabilityMinSamplesEl.value),
+    weight_mean_speed: parseNumberValue(reliabilityWeightMeanEl.value),
+    weight_speed_std: parseNumberValue(reliabilityWeightStdEl.value),
+    weight_congestion_frequency: parseNumberValue(reliabilityWeightCongEl.value),
+  };
+}
+
+function anomaliesOverridesFromForm() {
+  return {
+    window_points: parseIntValue(anomaliesWindowEl.value),
+    z_threshold: parseNumberValue(anomaliesZEl.value),
+    direction: anomaliesDirectionEl.value || null,
+    max_gap_minutes: parseIntValue(anomaliesMaxGapEl.value),
+    min_event_points: parseIntValue(anomaliesMinEventPointsEl.value),
+  };
+}
+
+function impactOverridesFromForm() {
+  return {
+    radius_meters: parseNumberValue(impactRadiusEl.value),
+    max_segments: parseIntValue(impactMaxSegmentsEl.value),
+    baseline_window_minutes: parseIntValue(impactBaselineMinutesEl.value),
+    recovery_horizon_minutes: parseIntValue(impactRecoveryMinutesEl.value),
+    recovery_ratio: parseNumberValue(impactRecoveryRatioEl.value),
+    speed_weighting: impactWeightingEl.value || null,
+    end_time_fallback_minutes: parseIntValue(impactEndFallbackEl.value),
+    min_baseline_points: parseIntValue(impactMinBaselineEl.value),
+    min_event_points: parseIntValue(impactMinEventEl.value),
+  };
+}
+
+function applyReliabilityOverrides(url) {
+  const o = getNested(uiState, "overrides.reliability", null);
+  if (!o) return;
+  if (o.congestion_speed_threshold_kph != null)
+    url.searchParams.set("congestion_speed_threshold_kph", String(o.congestion_speed_threshold_kph));
+  if (o.min_samples != null) url.searchParams.set("min_samples", String(o.min_samples));
+  if (o.weight_mean_speed != null) url.searchParams.set("weight_mean_speed", String(o.weight_mean_speed));
+  if (o.weight_speed_std != null) url.searchParams.set("weight_speed_std", String(o.weight_speed_std));
+  if (o.weight_congestion_frequency != null)
+    url.searchParams.set("weight_congestion_frequency", String(o.weight_congestion_frequency));
+}
+
+function applyAnomaliesOverrides(url) {
+  const o = getNested(uiState, "overrides.anomalies", null);
+  if (!o) return;
+  if (o.window_points != null) url.searchParams.set("window_points", String(o.window_points));
+  if (o.z_threshold != null) url.searchParams.set("z_threshold", String(o.z_threshold));
+  if (o.direction) url.searchParams.set("direction", String(o.direction));
+  if (o.max_gap_minutes != null) url.searchParams.set("max_gap_minutes", String(o.max_gap_minutes));
+  if (o.min_event_points != null) url.searchParams.set("min_event_points", String(o.min_event_points));
+}
+
+function applyImpactOverrides(url) {
+  const o = getNested(uiState, "overrides.impact", null);
+  if (!o) return;
+  if (o.radius_meters != null) url.searchParams.set("radius_meters", String(o.radius_meters));
+  if (o.max_segments != null) url.searchParams.set("max_segments", String(o.max_segments));
+  if (o.baseline_window_minutes != null)
+    url.searchParams.set("baseline_window_minutes", String(o.baseline_window_minutes));
+  if (o.recovery_horizon_minutes != null)
+    url.searchParams.set("recovery_horizon_minutes", String(o.recovery_horizon_minutes));
+  if (o.recovery_ratio != null) url.searchParams.set("recovery_ratio", String(o.recovery_ratio));
+  if (o.speed_weighting) url.searchParams.set("speed_weighting", String(o.speed_weighting));
+  if (o.end_time_fallback_minutes != null)
+    url.searchParams.set("end_time_fallback_minutes", String(o.end_time_fallback_minutes));
+  if (o.min_baseline_points != null)
+    url.searchParams.set("min_baseline_points", String(o.min_baseline_points));
+  if (o.min_event_points != null) url.searchParams.set("min_event_points", String(o.min_event_points));
+}
+
+async function loadUiDefaultsFromApi() {
+  try {
+    uiDefaults = await fetchJson(`${API_BASE}/ui/settings`);
+    return uiDefaults;
+  } catch (err) {
+    return null;
+  }
+}
+
+function applyDefaultsToForm(defaults) {
+  if (!defaults || !defaults.analytics) return;
+
+  const rel = defaults.analytics.reliability || {};
+  setInputPlaceholder(reliabilityThresholdEl, rel.congestion_speed_threshold_kph);
+  setInputPlaceholder(reliabilityMinSamplesEl, rel.min_samples);
+  setInputPlaceholder(reliabilityWeightMeanEl, getNested(rel, "weights.mean_speed", null));
+  setInputPlaceholder(reliabilityWeightStdEl, getNested(rel, "weights.speed_std", null));
+  setInputPlaceholder(reliabilityWeightCongEl, getNested(rel, "weights.congestion_frequency", null));
+  if (reliabilityThresholdEl && !reliabilityThresholdEl.value)
+    setInputValue(reliabilityThresholdEl, rel.congestion_speed_threshold_kph);
+  if (reliabilityMinSamplesEl && !reliabilityMinSamplesEl.value)
+    setInputValue(reliabilityMinSamplesEl, rel.min_samples);
+  if (reliabilityWeightMeanEl && !reliabilityWeightMeanEl.value)
+    setInputValue(reliabilityWeightMeanEl, getNested(rel, "weights.mean_speed", null));
+  if (reliabilityWeightStdEl && !reliabilityWeightStdEl.value)
+    setInputValue(reliabilityWeightStdEl, getNested(rel, "weights.speed_std", null));
+  if (reliabilityWeightCongEl && !reliabilityWeightCongEl.value)
+    setInputValue(reliabilityWeightCongEl, getNested(rel, "weights.congestion_frequency", null));
+
+  const an = defaults.analytics.anomalies || {};
+  setInputPlaceholder(anomaliesWindowEl, an.window_points);
+  setInputPlaceholder(anomaliesZEl, an.z_threshold);
+  setInputPlaceholder(anomaliesMaxGapEl, an.max_gap_minutes);
+  setInputPlaceholder(anomaliesMinEventPointsEl, an.min_event_points);
+
+  if (anomaliesWindowEl && !anomaliesWindowEl.value) setInputValue(anomaliesWindowEl, an.window_points);
+  if (anomaliesZEl && !anomaliesZEl.value) setInputValue(anomaliesZEl, an.z_threshold);
+  if (anomaliesMaxGapEl && !anomaliesMaxGapEl.value) setInputValue(anomaliesMaxGapEl, an.max_gap_minutes);
+  if (anomaliesMinEventPointsEl && !anomaliesMinEventPointsEl.value)
+    setInputValue(anomaliesMinEventPointsEl, an.min_event_points);
+  if (an.direction && anomaliesDirectionEl) anomaliesDirectionEl.value = String(an.direction);
+
+  const impact = defaults.analytics.event_impact || {};
+  setInputPlaceholder(impactRadiusEl, impact.radius_meters);
+  setInputPlaceholder(impactMaxSegmentsEl, impact.max_segments);
+  setInputPlaceholder(impactBaselineMinutesEl, impact.baseline_window_minutes);
+  setInputPlaceholder(impactRecoveryMinutesEl, impact.recovery_horizon_minutes);
+  setInputPlaceholder(impactRecoveryRatioEl, impact.recovery_ratio);
+  setInputPlaceholder(impactEndFallbackEl, impact.end_time_fallback_minutes);
+  setInputPlaceholder(impactMinBaselineEl, impact.min_baseline_points);
+  setInputPlaceholder(impactMinEventEl, impact.min_event_points);
+
+  if (impactRadiusEl && !impactRadiusEl.value) setInputValue(impactRadiusEl, impact.radius_meters);
+  if (impactMaxSegmentsEl && !impactMaxSegmentsEl.value) setInputValue(impactMaxSegmentsEl, impact.max_segments);
+  if (impactBaselineMinutesEl && !impactBaselineMinutesEl.value)
+    setInputValue(impactBaselineMinutesEl, impact.baseline_window_minutes);
+  if (impactRecoveryMinutesEl && !impactRecoveryMinutesEl.value)
+    setInputValue(impactRecoveryMinutesEl, impact.recovery_horizon_minutes);
+  if (impactRecoveryRatioEl && !impactRecoveryRatioEl.value)
+    setInputValue(impactRecoveryRatioEl, impact.recovery_ratio);
+  if (impactEndFallbackEl && !impactEndFallbackEl.value)
+    setInputValue(impactEndFallbackEl, impact.end_time_fallback_minutes);
+  if (impactMinBaselineEl && !impactMinBaselineEl.value)
+    setInputValue(impactMinBaselineEl, impact.min_baseline_points);
+  if (impactMinEventEl && !impactMinEventEl.value) setInputValue(impactMinEventEl, impact.min_event_points);
+
+  if (impact.speed_weighting && impactWeightingEl) impactWeightingEl.value = String(impact.speed_weighting);
+}
+
+function applyStateToForm(state) {
+  const rel = getNested(state, "overrides.reliability", null);
+  if (rel) {
+    setInputValue(reliabilityThresholdEl, rel.congestion_speed_threshold_kph);
+    setInputValue(reliabilityMinSamplesEl, rel.min_samples);
+    setInputValue(reliabilityWeightMeanEl, rel.weight_mean_speed);
+    setInputValue(reliabilityWeightStdEl, rel.weight_speed_std);
+    setInputValue(reliabilityWeightCongEl, rel.weight_congestion_frequency);
+  }
+
+  const an = getNested(state, "overrides.anomalies", null);
+  if (an) {
+    setInputValue(anomaliesWindowEl, an.window_points);
+    setInputValue(anomaliesZEl, an.z_threshold);
+    setInputValue(anomaliesMaxGapEl, an.max_gap_minutes);
+    setInputValue(anomaliesMinEventPointsEl, an.min_event_points);
+    if (an.direction && anomaliesDirectionEl) anomaliesDirectionEl.value = String(an.direction);
+  }
+
+  const impact = getNested(state, "overrides.impact", null);
+  if (impact) {
+    setInputValue(impactRadiusEl, impact.radius_meters);
+    setInputValue(impactMaxSegmentsEl, impact.max_segments);
+    setInputValue(impactBaselineMinutesEl, impact.baseline_window_minutes);
+    setInputValue(impactRecoveryMinutesEl, impact.recovery_horizon_minutes);
+    setInputValue(impactRecoveryRatioEl, impact.recovery_ratio);
+    setInputValue(impactEndFallbackEl, impact.end_time_fallback_minutes);
+    setInputValue(impactMinBaselineEl, impact.min_baseline_points);
+    setInputValue(impactMinEventEl, impact.min_event_points);
+    if (impact.speed_weighting && impactWeightingEl) impactWeightingEl.value = String(impact.speed_weighting);
+  }
+
+  if (toggleAnomaliesEl) toggleAnomaliesEl.checked = Boolean(showAnomalies);
+  if (toggleHotspotsEl) toggleHotspotsEl.checked = Boolean(showHotspots);
+  if (toggleEventsEl) toggleEventsEl.checked = Boolean(showEvents);
+  if (toggleImpactEl) toggleImpactEl.checked = Boolean(showImpact);
+}
+
+function persistOverlays() {
+  uiState.overlays = uiState.overlays || {};
+  uiState.overlays.anomalies = Boolean(showAnomalies);
+  uiState.overlays.hotspots = Boolean(showHotspots);
+  uiState.overlays.events = Boolean(showEvents);
+  uiState.overlays.impact = Boolean(showImpact);
+  saveUiState(uiState);
+}
+
+function applySettingsFromForm({ refresh } = { refresh: true }) {
+  uiState.overrides = uiState.overrides || {};
+  uiState.overrides.reliability = reliabilityOverridesFromForm();
+  uiState.overrides.anomalies = anomaliesOverridesFromForm();
+  uiState.overrides.impact = impactOverridesFromForm();
+
+  showAnomalies = Boolean(toggleAnomaliesEl.checked);
+  showHotspots = Boolean(toggleHotspotsEl.checked);
+  showEvents = Boolean(toggleEventsEl.checked);
+  showImpact = Boolean(toggleImpactEl.checked);
+
+  persistOverlays();
+  applyOverlayVisibility();
+  saveUiState(uiState);
+
+  if (refresh) refreshAfterSettings();
+}
+
+function resetSettingsToDefaults() {
+  uiState.overrides = {};
+  showAnomalies = true;
+  showHotspots = true;
+  showEvents = true;
+  showImpact = true;
+  persistOverlays();
+
+  setInputValue(reliabilityThresholdEl, null);
+  setInputValue(reliabilityMinSamplesEl, null);
+  setInputValue(reliabilityWeightMeanEl, null);
+  setInputValue(reliabilityWeightStdEl, null);
+  setInputValue(reliabilityWeightCongEl, null);
+
+  setInputValue(anomaliesWindowEl, null);
+  setInputValue(anomaliesZEl, null);
+  setInputValue(anomaliesMaxGapEl, null);
+  setInputValue(anomaliesMinEventPointsEl, null);
+
+  setInputValue(impactRadiusEl, null);
+  setInputValue(impactMaxSegmentsEl, null);
+  setInputValue(impactBaselineMinutesEl, null);
+  setInputValue(impactRecoveryMinutesEl, null);
+  setInputValue(impactRecoveryRatioEl, null);
+  setInputValue(impactEndFallbackEl, null);
+  setInputValue(impactMinBaselineEl, null);
+  setInputValue(impactMinEventEl, null);
+
+  applyDefaultsToForm(uiDefaults);
+  applyStateToForm(uiState);
+  applyOverlayVisibility();
+  saveUiState(uiState);
+  refreshAfterSettings();
+}
+
+function refreshAfterSettings() {
+  const entity = getSelectedEntity();
+  const range = getIsoRange();
+  if (entity && entity.id && range) loadTimeseries();
+  if (rankingsLoaded) loadRankings();
+  if (hotspotsLoaded) loadHotspots();
+  if (selectedEventId) selectEvent(selectedEventId, { centerMap: false });
+}
+
+function initSettingsPanel() {
+  if (toggleAnomaliesEl) {
+    toggleAnomaliesEl.checked = Boolean(showAnomalies);
+    toggleAnomaliesEl.addEventListener("change", () => {
+      showAnomalies = Boolean(toggleAnomaliesEl.checked);
+      persistOverlays();
+      if (lastTimeseries.points && lastTimeseries.points.length) loadTimeseries();
+    });
+  }
+
+  if (toggleHotspotsEl) {
+    toggleHotspotsEl.checked = Boolean(showHotspots);
+    toggleHotspotsEl.addEventListener("change", () => {
+      showHotspots = Boolean(toggleHotspotsEl.checked);
+      persistOverlays();
+      applyOverlayVisibility();
+    });
+  }
+
+  if (toggleEventsEl) {
+    toggleEventsEl.checked = Boolean(showEvents);
+    toggleEventsEl.addEventListener("change", () => {
+      showEvents = Boolean(toggleEventsEl.checked);
+      persistOverlays();
+      applyOverlayVisibility();
+    });
+  }
+
+  if (toggleImpactEl) {
+    toggleImpactEl.checked = Boolean(showImpact);
+    toggleImpactEl.addEventListener("change", () => {
+      showImpact = Boolean(toggleImpactEl.checked);
+      persistOverlays();
+      applyOverlayVisibility();
+    });
+  }
+
+  if (applySettingsButton) {
+    applySettingsButton.addEventListener("click", () => applySettingsFromForm({ refresh: true }));
+  }
+  if (resetSettingsButton) {
+    resetSettingsButton.addEventListener("click", resetSettingsToDefaults);
+  }
+}
+
+function setShortcutsOverlayOpen(open) {
+  if (!shortcutsOverlayEl) return;
+  if (open) shortcutsOverlayEl.classList.remove("hidden");
+  else shortcutsOverlayEl.classList.add("hidden");
+}
+
+function toggleShortcutsOverlay() {
+  if (!shortcutsOverlayEl) return;
+  setShortcutsOverlayOpen(shortcutsOverlayEl.classList.contains("hidden"));
+}
+
+function initShortcutsOverlay() {
+  if (!shortcutsOverlayEl) return;
+  if (closeShortcutsButton) closeShortcutsButton.addEventListener("click", () => setShortcutsOverlayOpen(false));
+  shortcutsOverlayEl.addEventListener("click", (ev) => {
+    if (ev.target === shortcutsOverlayEl) setShortcutsOverlayOpen(false);
+  });
+}
+
+function isTypingInInput() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName ? el.tagName.toLowerCase() : "";
+  if (tag === "input" || tag === "textarea" || tag === "select") return true;
+  return Boolean(el.isContentEditable);
+}
+
+function panMap(dx, dy, { fast } = { fast: false }) {
+  const base = fast ? 220 : 120;
+  map.panBy([dx * base, dy * base], { animate: false });
+}
+
+function focusSelected() {
+  if (selectedSegmentId && markerById.has(selectedSegmentId)) {
+    selectSegment(selectedSegmentId, { centerMap: true });
+    return;
+  }
+  if (selectedEventId && eventMarkerById.has(selectedEventId)) {
+    selectEvent(selectedEventId, { centerMap: true });
+    return;
+  }
+  if (segments.length) {
+    const bounds = [];
+    for (const seg of segments) {
+      if (seg.lat == null || seg.lon == null) continue;
+      bounds.push([Number(seg.lat), Number(seg.lon)]);
+    }
+    if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
+  }
+}
+
+function parseLocalDateTimeInput(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const [datePart, timePart] = text.split("T");
+  if (!datePart || !timePart) return null;
+  const [year, month, day] = datePart.split("-").map((n) => Number(n));
+  const [hour, minute] = timePart.split(":").map((n) => Number(n));
+  if (![year, month, day, hour, minute].every((n) => Number.isFinite(n))) return null;
+  return new Date(year, month - 1, day, hour, minute, 0, 0);
+}
+
+function toLocalDateTimeInputValue(date) {
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(
+    date.getHours()
+  )}:${pad2(date.getMinutes())}`;
+}
+
+function shiftTimeRange(direction) {
+  const start = parseLocalDateTimeInput(startEl.value);
+  const end = parseLocalDateTimeInput(endEl.value);
+  if (!start || !end) return;
+  const deltaMs = end.getTime() - start.getTime();
+  if (!Number.isFinite(deltaMs) || deltaMs <= 0) return;
+
+  const nextStart = new Date(start.getTime() + direction * deltaMs);
+  const nextEnd = new Date(end.getTime() + direction * deltaMs);
+  startEl.value = toLocalDateTimeInputValue(nextStart);
+  endEl.value = toLocalDateTimeInputValue(nextEnd);
+  loadTimeseries();
+}
+
+function initKeyboardShortcuts() {
+  document.addEventListener("keydown", (ev) => {
+    if (isTypingInInput()) return;
+    if (ev.key === "Escape") {
+      setShortcutsOverlayOpen(false);
+      return;
+    }
+
+    if (ev.key === "?" || (ev.key === "/" && ev.shiftKey)) {
+      toggleShortcutsOverlay();
+      ev.preventDefault();
+      return;
+    }
+
+    const key = String(ev.key || "").toLowerCase();
+    const fast = ev.shiftKey;
+
+    if (key === "w" || ev.key === "ArrowUp") {
+      panMap(0, -1, { fast });
+      ev.preventDefault();
+      return;
+    }
+    if (key === "s" || ev.key === "ArrowDown") {
+      panMap(0, 1, { fast });
+      ev.preventDefault();
+      return;
+    }
+    if (key === "a" || ev.key === "ArrowLeft") {
+      panMap(-1, 0, { fast });
+      ev.preventDefault();
+      return;
+    }
+    if (key === "d" || ev.key === "ArrowRight") {
+      panMap(1, 0, { fast });
+      ev.preventDefault();
+      return;
+    }
+
+    if (ev.key === "+" || ev.key === "=") {
+      map.setZoom(map.getZoom() + 1, { animate: false });
+      ev.preventDefault();
+      return;
+    }
+    if (ev.key === "-" || ev.key === "_") {
+      map.setZoom(map.getZoom() - 1, { animate: false });
+      ev.preventDefault();
+      return;
+    }
+
+    if (key === "l") {
+      loadTimeseries();
+      ev.preventDefault();
+      return;
+    }
+    if (key === "r") {
+      loadTimeseries();
+      ev.preventDefault();
+      return;
+    }
+    if (key === "f") {
+      focusSelected();
+      ev.preventDefault();
+      return;
+    }
+
+    if (ev.key === "[") {
+      shiftTimeRange(-1);
+      ev.preventDefault();
+      return;
+    }
+    if (ev.key === "]") {
+      shiftTimeRange(1);
+      ev.preventDefault();
+      return;
+    }
+
+    if (key === "h") {
+      showHotspots = !showHotspots;
+      if (toggleHotspotsEl) toggleHotspotsEl.checked = Boolean(showHotspots);
+      persistOverlays();
+      applyOverlayVisibility();
+      ev.preventDefault();
+      return;
+    }
+    if (key === "e") {
+      showEvents = !showEvents;
+      if (toggleEventsEl) toggleEventsEl.checked = Boolean(showEvents);
+      persistOverlays();
+      applyOverlayVisibility();
+      ev.preventDefault();
+      return;
+    }
+    if (key === "n") {
+      showAnomalies = !showAnomalies;
+      if (toggleAnomaliesEl) toggleAnomaliesEl.checked = Boolean(showAnomalies);
+      persistOverlays();
+      loadTimeseries();
+      ev.preventDefault();
+      return;
+    }
+  });
 }
 
 function formatSegmentLabel(segment) {
@@ -357,6 +1085,7 @@ function renderHotspots(rows, metric) {
 
 function clearHotspots() {
   hotspotRows = [];
+  hotspotsLoaded = false;
   hotspotsLayer.clearLayers();
   updateHotspotInfo("No hotspots loaded.");
   setStatus("Hotspots cleared.");
@@ -383,15 +1112,18 @@ async function loadHotspots() {
     `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`
   );
   url.searchParams.set("limit", "5000");
+  applyReliabilityOverrides(url);
 
   try {
     hotspotRows = await fetchJson(url.toString());
   } catch (err) {
+    hotspotsLoaded = false;
     updateHotspotInfo("Failed to load hotspots. Ensure the API includes /map/snapshot and a dataset is built.");
     setStatus(`Failed to load hotspots: ${err.message}`);
     return;
   }
 
+  hotspotsLoaded = true;
   renderHotspots(hotspotRows, metric);
   setStatus(`Hotspots loaded (${hotspotRows.length} rows).`);
 }
@@ -408,6 +1140,7 @@ async function loadAnomalies(entity, range, minutes) {
   url.searchParams.set("start", range.start);
   url.searchParams.set("end", range.end);
   if (minutes) url.searchParams.set("minutes", minutes);
+  applyAnomaliesOverrides(url);
 
   try {
     return await fetchJson(url.toString());
@@ -653,7 +1386,14 @@ async function loadTimeseries() {
         ? raw.map((p) => ({ timestamp: p.timestamp, speed_kph: p.speed_kph, volume: p.volume }))
         : raw.map((p) => ({ timestamp: p.timestamp, speed_kph: p.speed_kph, volume: p.volume }));
 
-    const anomalies = await loadAnomalies(entity, range, minutes);
+    lastTimeseries = { entity, range, minutes, points, anomalies: null };
+
+    let anomalies = null;
+    if (showAnomalies) {
+      anomalies = await loadAnomalies(entity, range, minutes);
+      lastTimeseries.anomalies = anomalies;
+    }
+
     renderTimeseries(points, { title: getEntityTitle(entity), anomalies });
   } catch (err) {
     setStatus(`Failed to load timeseries: ${err.message}`);
@@ -701,6 +1441,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   const url = new URL(`${API_BASE}/events/${encodeURIComponent(eventId)}/impact`);
   url.searchParams.set("include_timeseries", "true");
   if (minutes) url.searchParams.set("minutes", minutes);
+  applyImpactOverrides(url);
 
   setStatus("Loading event impact...");
   fetchJson(url.toString())
@@ -876,6 +1617,7 @@ async function loadRankings() {
 
   url.searchParams.set("limit", limit);
   if (minutes) url.searchParams.set("minutes", minutes);
+  applyReliabilityOverrides(url);
 
   const range = getIsoRange();
   if (range) {
@@ -887,8 +1629,10 @@ async function loadRankings() {
   try {
     const items = await fetchJson(url.toString());
     renderRankings(items, type);
+    rankingsLoaded = true;
     setStatus(`Loaded ${items.length} ranking rows.`);
   } catch (err) {
+    rankingsLoaded = false;
     rankingsEl.textContent = "Failed to load rankings.";
     setStatus(`Failed to load rankings: ${err.message}`);
   }
@@ -958,11 +1702,13 @@ async function loadEvents() {
   try {
     events = await fetchJson(url.toString());
   } catch (err) {
+    eventsLoaded = false;
     eventsEl.textContent = "Failed to load events. Run scripts/build_events.py and check ingestion.events config.";
     setStatus(`Failed to load events: ${err.message}`);
     return;
   }
 
+  eventsLoaded = true;
   eventsById = new Map(events.map((e) => [e.event_id, e]));
 
   eventMarkers.clearLayers();
@@ -1014,6 +1760,19 @@ loadEventsButton.addEventListener("click", loadEvents);
 loadHotspotsButton.addEventListener("click", loadHotspots);
 clearHotspotsButton.addEventListener("click", clearHotspots);
 hotspotMetricEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value));
+
+applyLayoutFromState();
+applyOverlayVisibility();
+initLayoutResizers();
+initPanelCollapse();
+initSettingsPanel();
+initShortcutsOverlay();
+initKeyboardShortcuts();
+
+loadUiDefaultsFromApi().then((defaults) => {
+  if (defaults) applyDefaultsToForm(defaults);
+  applyStateToForm(uiState);
+});
 
 setDefaultTimeRange();
 loadSegments();

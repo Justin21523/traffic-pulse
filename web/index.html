@@ -24,15 +24,141 @@
     </header>
 
     <main class="layout">
-      <section class="sidebar">
-        <div class="panel">
+      <section class="sidebar" id="sidebar">
+        <div class="panel" data-panel-id="data-source">
           <div class="panel-title">Data Source</div>
           <div class="panel-body small">
             API: <span class="mono" id="api-base"></span>
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" data-panel-id="controls">
+          <div class="panel-title">Controls</div>
+          <div class="panel-body">
+            <details open class="details">
+              <summary class="details-summary">Overlays</summary>
+              <div class="details-body">
+                <label class="check">
+                  <input type="checkbox" id="toggle-anomalies" checked />
+                  <span>Show anomalies on chart</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="toggle-hotspots" checked />
+                  <span>Show hotspots overlay</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="toggle-events" checked />
+                  <span>Show events overlay</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="toggle-impact" checked />
+                  <span>Show impacted segments overlay</span>
+                </label>
+              </div>
+            </details>
+
+            <details class="details">
+              <summary class="details-summary">Analytics Overrides</summary>
+              <div class="details-body">
+                <div class="subhead">Reliability</div>
+                <label class="field">
+                  <span class="label">Congestion speed threshold (kph)</span>
+                  <input id="reliability-threshold" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min samples</span>
+                  <input id="reliability-min-samples" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Weight: mean speed</span>
+                  <input id="reliability-weight-mean" type="number" min="0" step="0.05" />
+                </label>
+                <label class="field">
+                  <span class="label">Weight: speed std</span>
+                  <input id="reliability-weight-std" type="number" min="0" step="0.05" />
+                </label>
+                <label class="field">
+                  <span class="label">Weight: congestion frequency</span>
+                  <input id="reliability-weight-cong" type="number" min="0" step="0.05" />
+                </label>
+
+                <div class="subhead">Anomalies</div>
+                <label class="field">
+                  <span class="label">Rolling window (points)</span>
+                  <input id="anomalies-window" type="number" min="2" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Z threshold</span>
+                  <input id="anomalies-z" type="number" min="0.1" step="0.1" />
+                </label>
+                <label class="field">
+                  <span class="label">Direction</span>
+                  <select id="anomalies-direction">
+                    <option value="low" selected>Low (slowdown)</option>
+                    <option value="high">High (speed-up)</option>
+                    <option value="both">Both</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="label">Max gap (minutes)</span>
+                  <input id="anomalies-max-gap" type="number" min="0" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min event points</span>
+                  <input id="anomalies-min-event-points" type="number" min="1" step="1" />
+                </label>
+
+                <div class="subhead">Event impact</div>
+                <label class="field">
+                  <span class="label">Radius (meters)</span>
+                  <input id="impact-radius" type="number" min="1" step="10" />
+                </label>
+                <label class="field">
+                  <span class="label">Max segments</span>
+                  <input id="impact-max-segments" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Baseline window (minutes)</span>
+                  <input id="impact-baseline-minutes" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Recovery horizon (minutes)</span>
+                  <input id="impact-recovery-minutes" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Recovery ratio</span>
+                  <input id="impact-recovery-ratio" type="number" min="0.1" max="1" step="0.05" />
+                </label>
+                <label class="field">
+                  <span class="label">Speed weighting</span>
+                  <select id="impact-weighting">
+                    <option value="volume" selected>Volume</option>
+                    <option value="equal">Equal</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="label">End time fallback (minutes)</span>
+                  <input id="impact-end-fallback" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min baseline points</span>
+                  <input id="impact-min-baseline" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min event points</span>
+                  <input id="impact-min-event" type="number" min="1" step="1" />
+                </label>
+              </div>
+            </details>
+
+            <div class="button-row">
+              <button class="button" id="apply-settings">Apply settings</button>
+              <button class="button secondary" id="reset-settings">Reset defaults</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="segment">
           <div class="panel-title">Segment</div>
           <div class="panel-body">
             <label class="field">
@@ -47,7 +173,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" data-panel-id="corridor">
           <div class="panel-title">Corridor</div>
           <div class="panel-body">
             <label class="field">
@@ -58,7 +184,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" data-panel-id="time-range">
           <div class="panel-title">Time Range</div>
           <div class="panel-body">
             <label class="field">
@@ -88,7 +214,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" data-panel-id="hotspots">
           <div class="panel-title">Hotspots</div>
           <div class="panel-body">
             <label class="field">
@@ -105,7 +231,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" data-panel-id="rankings">
           <div class="panel-title">Rankings</div>
           <div class="panel-body">
             <label class="field">
@@ -128,7 +254,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" data-panel-id="events">
           <div class="panel-title">Events</div>
           <div class="panel-body">
             <button class="button" id="load-events">Load events (map bounds)</button>
@@ -137,7 +263,7 @@
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel" data-panel-id="help">
           <div class="panel-title">Help</div>
           <div class="panel-body small">
             <ul class="list">
@@ -145,6 +271,7 @@
               <li>Pick a time range and load the time series.</li>
               <li>Load Hotspots to color segments by mean speed or congestion frequency.</li>
               <li>Use the Events panel to load incident markers and impact summaries.</li>
+              <li>Keyboard: WASD/Arrows pan, +/- zoom, L load, R reload, F focus, N anomalies, ? shortcuts.</li>
               <li>
                 You can override API base URL with <span class="mono">?api=http://localhost:8000</span>.
               </li>
@@ -153,14 +280,54 @@
         </div>
       </section>
 
-      <section class="content">
+      <div class="resizer-vertical" id="sidebar-resizer" title="Drag to resize"></div>
+
+      <section class="content" id="content">
         <div class="map" id="map"></div>
+        <div class="resizer-horizontal" id="chart-resizer" title="Drag to resize"></div>
         <div class="chart">
           <div class="chart-title">Time Series</div>
           <div class="chart-body" id="chart"></div>
         </div>
       </section>
     </main>
+
+    <div class="overlay hidden" id="shortcuts-overlay" role="dialog" aria-modal="true">
+      <div class="overlay-card">
+        <div class="overlay-title">Shortcuts</div>
+        <div class="overlay-body">
+          <div class="overlay-grid">
+            <div class="key">W/A/S/D</div>
+            <div class="desc">Pan map</div>
+            <div class="key">Arrow keys</div>
+            <div class="desc">Pan map</div>
+            <div class="key">+</div>
+            <div class="desc">Zoom in</div>
+            <div class="key">-</div>
+            <div class="desc">Zoom out</div>
+            <div class="key">L</div>
+            <div class="desc">Load time series</div>
+            <div class="key">R</div>
+            <div class="desc">Reload time series</div>
+            <div class="key">F</div>
+            <div class="desc">Focus selected entity</div>
+            <div class="key">[ / ]</div>
+            <div class="desc">Shift time window</div>
+            <div class="key">H</div>
+            <div class="desc">Toggle hotspots</div>
+            <div class="key">E</div>
+            <div class="desc">Toggle events</div>
+            <div class="key">N</div>
+            <div class="desc">Toggle anomalies</div>
+            <div class="key">?</div>
+            <div class="desc">Toggle this help</div>
+            <div class="key">Esc</div>
+            <div class="desc">Close dialogs</div>
+          </div>
+          <button class="button secondary" id="close-shortcuts">Close</button>
+        </div>
+      </div>
+    </div>
 
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"

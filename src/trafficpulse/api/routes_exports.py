@@ -12,7 +12,11 @@ from trafficpulse.analytics.corridors import (
     corridor_metadata,
     load_corridors_csv,
 )
-from trafficpulse.analytics.reliability import compute_reliability_rankings, reliability_spec_from_config
+from trafficpulse.analytics.reliability import (
+    apply_reliability_overrides,
+    compute_reliability_rankings,
+    reliability_spec_from_config,
+)
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
@@ -42,6 +46,11 @@ def export_segment_reliability_csv(
     end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
     limit: int = Query(default=200, ge=1, le=5000),
     minutes: Optional[int] = Query(default=None, ge=1),
+    congestion_speed_threshold_kph: Optional[float] = Query(default=None, gt=0),
+    min_samples: Optional[int] = Query(default=None, ge=1),
+    weight_mean_speed: Optional[float] = Query(default=None, ge=0),
+    weight_speed_std: Optional[float] = Query(default=None, ge=0),
+    weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
 ) -> Response:
     config = get_config()
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
@@ -109,7 +118,17 @@ def export_segment_reliability_csv(
     if observations.empty:
         return _csv_response(pd.DataFrame(), filename="segment_rankings.csv")
 
-    spec = reliability_spec_from_config(config)
+    try:
+        spec = apply_reliability_overrides(
+            reliability_spec_from_config(config),
+            congestion_speed_threshold_kph=congestion_speed_threshold_kph,
+            min_samples=min_samples,
+            weight_mean_speed=weight_mean_speed,
+            weight_speed_std=weight_speed_std,
+            weight_congestion_frequency=weight_congestion_frequency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     rankings = compute_reliability_rankings(observations, spec, start=start_dt, end=end_dt, limit=limit)
     return _csv_response(rankings, filename=f"segment_rankings_{granularity_minutes}min.csv")
 
@@ -120,6 +139,11 @@ def export_corridor_reliability_csv(
     end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
     limit: int = Query(default=200, ge=1, le=5000),
     minutes: Optional[int] = Query(default=None, ge=1),
+    congestion_speed_threshold_kph: Optional[float] = Query(default=None, gt=0),
+    min_samples: Optional[int] = Query(default=None, ge=1),
+    weight_mean_speed: Optional[float] = Query(default=None, ge=0),
+    weight_speed_std: Optional[float] = Query(default=None, ge=0),
+    weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
 ) -> Response:
     config = get_config()
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
@@ -198,7 +222,17 @@ def export_corridor_reliability_csv(
         observations = observations[observations["segment_id"].isin(segment_ids)]
         if observations.empty:
             return _csv_response(pd.DataFrame(), filename="corridor_rankings.csv")
-    spec = reliability_spec_from_config(config)
+    try:
+        spec = apply_reliability_overrides(
+            reliability_spec_from_config(config),
+            congestion_speed_threshold_kph=congestion_speed_threshold_kph,
+            min_samples=min_samples,
+            weight_mean_speed=weight_mean_speed,
+            weight_speed_std=weight_speed_std,
+            weight_congestion_frequency=weight_congestion_frequency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     rankings = compute_corridor_reliability_rankings(
         observations,
         corridors,

@@ -230,3 +230,25 @@ def _rolling_zscore_single(df: pd.DataFrame, spec: AnomalySpec) -> pd.DataFrame:
     df["is_anomaly"] = is_anomaly.astype(bool)
     return df
 
+
+def apply_anomaly_overrides(
+    spec: AnomalySpec,
+    *,
+    window_points: Optional[int] = None,
+    z_threshold: Optional[float] = None,
+    direction: Optional[str] = None,
+    max_gap_minutes: Optional[int] = None,
+    min_event_points: Optional[int] = None,
+) -> AnomalySpec:
+    updated = spec
+    if window_points is not None:
+        updated = replace(updated, window_points=int(window_points))
+    if z_threshold is not None:
+        updated = replace(updated, z_threshold=float(z_threshold))
+    if direction is not None:
+        updated = replace(updated, direction=str(direction))
+    if max_gap_minutes is not None:
+        updated = replace(updated, max_gap_minutes=int(max_gap_minutes))
+    if min_event_points is not None:
+        updated = replace(updated, min_event_points=int(min_event_points))
+    return updated.normalized()

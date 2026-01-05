@@ -88,6 +88,18 @@ The API can compute a map snapshot (mean speed / congestion frequency) for the c
 
 - `GET /map/snapshot`
 
+## Dashboard Controls (Phase 6)
+
+The dashboard includes a Unity-like Controls panel:
+
+- Toggle overlays (events/hotspots/impact markers, anomaly markers on chart)
+- Tune analytics parameters (reliability weights & threshold, anomaly z-score settings, event impact radius/windows)
+- Keyboard shortcuts: press `?` to open the shortcuts overlay
+
+API support:
+
+- `GET /ui/settings` returns the default config values used by the dashboard
+
 ## Aggregate Observations (Phase 1)
 
 Convert `5-min` observations into `15-min` or `hourly` series (config-driven):

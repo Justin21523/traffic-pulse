@@ -286,6 +286,44 @@ def compute_event_impact(
     }
 
 
+def apply_event_impact_overrides(
+    spec: EventImpactSpec,
+    *,
+    default_window_hours: Optional[int] = None,
+    radius_meters: Optional[float] = None,
+    max_segments: Optional[int] = None,
+    baseline_window_minutes: Optional[int] = None,
+    end_time_fallback_minutes: Optional[int] = None,
+    recovery_horizon_minutes: Optional[int] = None,
+    recovery_ratio: Optional[float] = None,
+    speed_weighting: Optional[str] = None,
+    min_baseline_points: Optional[int] = None,
+    min_event_points: Optional[int] = None,
+) -> EventImpactSpec:
+    updated = spec
+    if default_window_hours is not None:
+        updated = replace(updated, default_window_hours=int(default_window_hours))
+    if radius_meters is not None:
+        updated = replace(updated, radius_meters=float(radius_meters))
+    if max_segments is not None:
+        updated = replace(updated, max_segments=int(max_segments))
+    if baseline_window_minutes is not None:
+        updated = replace(updated, baseline_window_minutes=int(baseline_window_minutes))
+    if end_time_fallback_minutes is not None:
+        updated = replace(updated, end_time_fallback_minutes=int(end_time_fallback_minutes))
+    if recovery_horizon_minutes is not None:
+        updated = replace(updated, recovery_horizon_minutes=int(recovery_horizon_minutes))
+    if recovery_ratio is not None:
+        updated = replace(updated, recovery_ratio=float(recovery_ratio))
+    if speed_weighting is not None:
+        updated = replace(updated, speed_weighting=str(speed_weighting))
+    if min_baseline_points is not None:
+        updated = replace(updated, min_baseline_points=int(min_baseline_points))
+    if min_event_points is not None:
+        updated = replace(updated, min_event_points=int(min_event_points))
+    return updated.normalized()
+
+
 def compute_event_impacts(
     events: pd.DataFrame,
     *,

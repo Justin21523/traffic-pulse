@@ -13,6 +13,7 @@ from trafficpulse.api.routes_event_impact import router as event_impact_router
 from trafficpulse.api.routes_map import router as map_router
 from trafficpulse.api.routes_segments import router as segments_router
 from trafficpulse.api.routes_timeseries import router as timeseries_router
+from trafficpulse.api.routes_ui import router as ui_router
 from trafficpulse.logging_config import configure_logging
 from trafficpulse.settings import get_config, project_root
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(events_router, tags=["events"])
     app.include_router(event_impact_router, tags=["events"])
     app.include_router(map_router, tags=["map"])
+    app.include_router(ui_router, tags=["ui"])
 
     web_dir = project_root() / "web"
     if web_dir.exists():

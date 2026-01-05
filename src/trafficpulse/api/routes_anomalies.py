@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from trafficpulse.analytics.anomalies import (
+    apply_anomaly_overrides,
     anomaly_spec_from_config,
     compute_anomaly_timeseries,
     spec_for_entity,
@@ -95,9 +96,24 @@ def segment_anomalies(
     start: str = Query(...),
     end: str = Query(...),
     minutes: Optional[int] = Query(default=None, ge=1),
+    window_points: Optional[int] = Query(default=None, ge=2),
+    z_threshold: Optional[float] = Query(default=None, gt=0),
+    direction: Optional[str] = Query(default=None),
+    max_gap_minutes: Optional[int] = Query(default=None, ge=0),
+    min_event_points: Optional[int] = Query(default=None, ge=1),
 ) -> list[AnomalyPoint]:
     config = get_config()
-    spec = anomaly_spec_from_config(config)
+    try:
+        spec = apply_anomaly_overrides(
+            anomaly_spec_from_config(config),
+            window_points=window_points,
+            z_threshold=z_threshold,
+            direction=direction,
+            max_gap_minutes=max_gap_minutes,
+            min_event_points=min_event_points,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)
@@ -136,9 +152,24 @@ def segment_anomaly_events(
     start: str = Query(...),
     end: str = Query(...),
     minutes: Optional[int] = Query(default=None, ge=1),
+    window_points: Optional[int] = Query(default=None, ge=2),
+    z_threshold: Optional[float] = Query(default=None, gt=0),
+    direction: Optional[str] = Query(default=None),
+    max_gap_minutes: Optional[int] = Query(default=None, ge=0),
+    min_event_points: Optional[int] = Query(default=None, ge=1),
 ) -> list[AnomalyEvent]:
     config = get_config()
-    spec = anomaly_spec_from_config(config)
+    try:
+        spec = apply_anomaly_overrides(
+            anomaly_spec_from_config(config),
+            window_points=window_points,
+            z_threshold=z_threshold,
+            direction=direction,
+            max_gap_minutes=max_gap_minutes,
+            min_event_points=min_event_points,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)
@@ -179,9 +210,24 @@ def corridor_anomalies(
     start: str = Query(...),
     end: str = Query(...),
     minutes: Optional[int] = Query(default=None, ge=1),
+    window_points: Optional[int] = Query(default=None, ge=2),
+    z_threshold: Optional[float] = Query(default=None, gt=0),
+    direction: Optional[str] = Query(default=None),
+    max_gap_minutes: Optional[int] = Query(default=None, ge=0),
+    min_event_points: Optional[int] = Query(default=None, ge=1),
 ) -> list[AnomalyPoint]:
     config = get_config()
-    spec = anomaly_spec_from_config(config)
+    try:
+        spec = apply_anomaly_overrides(
+            anomaly_spec_from_config(config),
+            window_points=window_points,
+            z_threshold=z_threshold,
+            direction=direction,
+            max_gap_minutes=max_gap_minutes,
+            min_event_points=min_event_points,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)
@@ -236,9 +282,24 @@ def corridor_anomaly_events(
     start: str = Query(...),
     end: str = Query(...),
     minutes: Optional[int] = Query(default=None, ge=1),
+    window_points: Optional[int] = Query(default=None, ge=2),
+    z_threshold: Optional[float] = Query(default=None, gt=0),
+    direction: Optional[str] = Query(default=None),
+    max_gap_minutes: Optional[int] = Query(default=None, ge=0),
+    min_event_points: Optional[int] = Query(default=None, ge=1),
 ) -> list[AnomalyEvent]:
     config = get_config()
-    spec = anomaly_spec_from_config(config)
+    try:
+        spec = apply_anomaly_overrides(
+            anomaly_spec_from_config(config),
+            window_points=window_points,
+            z_threshold=z_threshold,
+            direction=direction,
+            max_gap_minutes=max_gap_minutes,
+            min_event_points=min_event_points,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     start_dt = parse_datetime(start)
     end_dt = parse_datetime(end)

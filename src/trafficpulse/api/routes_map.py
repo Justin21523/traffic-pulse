@@ -7,7 +7,11 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from trafficpulse.analytics.reliability import compute_reliability_metrics, reliability_spec_from_config
+from trafficpulse.analytics.reliability import (
+    apply_reliability_overrides,
+    compute_reliability_metrics,
+    reliability_spec_from_config,
+)
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
@@ -56,6 +60,11 @@ def get_map_snapshot(
     ),
     city: Optional[str] = Query(default=None),
     limit: int = Query(default=5000, ge=1, le=50000),
+    congestion_speed_threshold_kph: Optional[float] = Query(default=None, gt=0),
+    min_samples: Optional[int] = Query(default=None, ge=1),
+    weight_mean_speed: Optional[float] = Query(default=None, ge=0),
+    weight_speed_std: Optional[float] = Query(default=None, ge=0),
+    weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
 ) -> list[SegmentSnapshot]:
     config = get_config()
     processed_dir = config.paths.processed_dir
@@ -190,7 +199,17 @@ def get_map_snapshot(
     if observations.empty:
         return []
 
-    spec = reliability_spec_from_config(config)
+    try:
+        spec = apply_reliability_overrides(
+            reliability_spec_from_config(config),
+            congestion_speed_threshold_kph=congestion_speed_threshold_kph,
+            min_samples=min_samples,
+            weight_mean_speed=weight_mean_speed,
+            weight_speed_std=weight_speed_std,
+            weight_congestion_frequency=weight_congestion_frequency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     metrics = compute_reliability_metrics(
         observations,
         spec,

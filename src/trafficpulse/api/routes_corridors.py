@@ -12,7 +12,7 @@ from trafficpulse.analytics.corridors import (
     corridor_metadata,
     load_corridors_csv,
 )
-from trafficpulse.analytics.reliability import reliability_spec_from_config
+from trafficpulse.analytics.reliability import apply_reliability_overrides, reliability_spec_from_config
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
@@ -79,6 +79,11 @@ def corridor_reliability_rankings(
     minutes: Optional[int] = Query(
         default=None, ge=1, description="Observation granularity in minutes (default: config)."
     ),
+    congestion_speed_threshold_kph: Optional[float] = Query(default=None, gt=0),
+    min_samples: Optional[int] = Query(default=None, ge=1),
+    weight_mean_speed: Optional[float] = Query(default=None, ge=0),
+    weight_speed_std: Optional[float] = Query(default=None, ge=0),
+    weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
 ) -> list[CorridorReliabilityRankingRow]:
     config = get_config()
     corridors = _load_corridors_or_404()
@@ -151,7 +156,17 @@ def corridor_reliability_rankings(
     if observations.empty:
         return []
 
-    spec = reliability_spec_from_config(config)
+    try:
+        spec = apply_reliability_overrides(
+            reliability_spec_from_config(config),
+            congestion_speed_threshold_kph=congestion_speed_threshold_kph,
+            min_samples=min_samples,
+            weight_mean_speed=weight_mean_speed,
+            weight_speed_std=weight_speed_std,
+            weight_congestion_frequency=weight_congestion_frequency,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     ranked = compute_corridor_reliability_rankings(
         observations,
         corridors,
