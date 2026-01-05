@@ -77,6 +77,7 @@ API endpoints:
 
 - `GET /corridors`
 - `GET /rankings/reliability/corridors`
+- `GET /timeseries/corridors?corridor_id=...&start=...&end=...&minutes=...`
 
 ## Anomalies (Phase 2)
 

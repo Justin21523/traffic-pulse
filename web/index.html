@@ -48,8 +48,26 @@
         </div>
 
         <div class="panel">
+          <div class="panel-title">Corridor</div>
+          <div class="panel-body">
+            <label class="field">
+              <span class="label">Select</span>
+              <select id="corridor-select"></select>
+            </label>
+            <div class="segment-info" id="corridor-info">No corridor selected.</div>
+          </div>
+        </div>
+
+        <div class="panel">
           <div class="panel-title">Time Range</div>
           <div class="panel-body">
+            <label class="field">
+              <span class="label">Entity</span>
+              <select id="entity-type">
+                <option value="segment" selected>Segment</option>
+                <option value="corridor">Corridor</option>
+              </select>
+            </label>
             <label class="field">
               <span class="label">Start (local)</span>
               <input id="start" type="datetime-local" />
@@ -67,6 +85,29 @@
               </select>
             </label>
             <button class="button" id="load">Load timeseries</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Rankings</div>
+          <div class="panel-body">
+            <label class="field">
+              <span class="label">Type</span>
+              <select id="ranking-type">
+                <option value="segments" selected>Segments (unreliable)</option>
+                <option value="corridors">Corridors (unreliable)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">Limit</span>
+              <select id="ranking-limit">
+                <option value="20" selected>Top 20</option>
+                <option value="50">Top 50</option>
+                <option value="100">Top 100</option>
+              </select>
+            </label>
+            <button class="button" id="load-rankings">Load rankings</button>
+            <div class="rankings" id="rankings"></div>
           </div>
         </div>
 
@@ -102,4 +143,3 @@
     <script src="app.js"></script>
   </body>
 </html>
-
