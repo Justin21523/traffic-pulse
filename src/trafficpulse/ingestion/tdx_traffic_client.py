@@ -12,7 +12,7 @@ import pandas as pd
 from trafficpulse.logging_config import configure_logging
 from trafficpulse.settings import AppConfig, get_config
 from trafficpulse.utils.cache import FileCache
-from trafficpulse.utils.time import to_utc
+from trafficpulse.utils.time import parse_datetime, to_utc
 from trafficpulse.ingestion.tdx_auth import TdxTokenProvider, load_tdx_credentials
 
 
@@ -164,6 +164,15 @@ class TdxTrafficClient:
 
         observations = pd.DataFrame(observation_rows)
         if not observations.empty:
+            def normalize_timestamp(value: Any) -> Any:
+                if value is None:
+                    return pd.NaT
+                try:
+                    return to_utc(parse_datetime(str(value)))
+                except Exception:
+                    return pd.NaT
+
+            observations["timestamp"] = observations["timestamp"].map(normalize_timestamp)
             observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
             observations = observations.dropna(subset=["timestamp", "segment_id"]).sort_values(
                 ["segment_id", "timestamp"]
