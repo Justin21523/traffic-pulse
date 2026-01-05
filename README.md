@@ -67,6 +67,22 @@ python scripts/build_reliability_rankings.py --limit 200
 python scripts/run_api.py
 ```
 
+## Open the MVP Dashboard (Phase 1)
+
+If you run the API, the static dashboard is served automatically:
+
+- `http://localhost:8000/`
+
+Alternatively, serve `web/` separately and point it to your API:
+
+```bash
+python -m http.server 5173 --directory web
+```
+
+Then open:
+
+- `http://localhost:5173/?api=http://localhost:8000`
+
 ## Notes
 
 - All implementation, docstrings, and documentation in this repo are written in English.
