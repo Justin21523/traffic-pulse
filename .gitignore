@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.log
+
+# Local configs
+configs/config.yaml
+
+# Local data (keep placeholders)
+data/*
+!data/**/.gitkeep
+

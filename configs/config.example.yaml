@@ -1,0 +1,78 @@
+app:
+  name: trafficpulse
+  timezone: Asia/Taipei
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  cache_dir: data/cache
+
+cache:
+  enabled: true
+  ttl_seconds: 3600
+
+tdx:
+  base_url: https://tdx.transportdata.tw/api/basic/v2
+  token_url: https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token
+  request_timeout_seconds: 30
+  max_retries: 3
+  retry_backoff_seconds: 1.0
+
+ingestion:
+  # MVP uses VD observations as the initial "segment" definition.
+  dataset: vd
+  # Chunk long time windows to avoid oversized requests.
+  query_chunk_minutes: 60
+  vd:
+    # The client will try these endpoints in order.
+    # Note: exact availability can vary by dataset; adjust as needed.
+    endpoint_templates:
+      - Traffic/VD/History/City/{city}
+      - Traffic/VD/Live/City/{city}
+    cities:
+      - Taipei
+    # Field names and normalization rules for the selected dataset.
+    time_field: DataCollectTime
+    segment_id_field: VDID
+    lane_list_field: VDLives
+    lane_speed_field: Speed
+    lane_volume_field: Volume
+    lane_occupancy_field: Occupancy
+    lane_speed_aggregation: volume_weighted_mean # [volume_weighted_mean, mean]
+    lane_volume_aggregation: sum
+    lane_occupancy_aggregation: mean
+    metadata_fields:
+      name_field: VDName
+      direction_field: Direction
+      road_name_field: RoadName
+      link_id_field: LinkID
+      lat_field: PositionLat
+      lon_field: PositionLon
+    paging:
+      page_size: 1000
+
+preprocessing:
+  source_granularity_minutes: 5
+  # Target aggregation interval used for downstream analytics and API responses.
+  target_granularity_minutes: 15
+  aggregation:
+    speed_kph: mean
+    volume: sum
+    occupancy_pct: mean
+
+analytics:
+  reliability:
+    congestion_speed_threshold_kph: 30
+    min_samples: 12
+    weights:
+      mean_speed: 0.4
+      speed_std: 0.3
+      congestion_frequency: 0.3
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  cors:
+    allow_origins:
+      - http://localhost:8000
+      - http://localhost:5173
