@@ -108,6 +108,18 @@ analytics:
     direction: low # low | high | both
     max_gap_minutes: 30
     min_event_points: 2
+  event_impact:
+    # Baseline impact analysis using events/incidents + speed time series (no ML).
+    default_window_hours: 24
+    radius_meters: 1000
+    max_segments: 50
+    baseline_window_minutes: 60
+    end_time_fallback_minutes: 60
+    recovery_horizon_minutes: 180
+    recovery_ratio: 0.9
+    speed_weighting: volume # volume | equal
+    min_baseline_points: 4
+    min_event_points: 2
 
 api:
   host: 0.0.0.0

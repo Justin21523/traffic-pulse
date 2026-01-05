@@ -156,10 +156,24 @@ class AnomaliesSection(BaseModel):
     min_event_points: int = 2
 
 
+class EventImpactSection(BaseModel):
+    default_window_hours: int = 24
+    radius_meters: float = 1000
+    max_segments: int = 50
+    baseline_window_minutes: int = 60
+    end_time_fallback_minutes: int = 60
+    recovery_horizon_minutes: int = 180
+    recovery_ratio: float = 0.9
+    speed_weighting: str = "volume"  # volume | equal
+    min_baseline_points: int = 4
+    min_event_points: int = 2
+
+
 class AnalyticsSection(BaseModel):
     reliability: ReliabilitySection = Field(default_factory=ReliabilitySection)
     corridors: CorridorsSection = Field(default_factory=CorridorsSection)
     anomalies: AnomaliesSection = Field(default_factory=AnomaliesSection)
+    event_impact: EventImpactSection = Field(default_factory=EventImpactSection)
 
 
 class CorsSection(BaseModel):

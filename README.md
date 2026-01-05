@@ -54,6 +54,18 @@ Traffic events/incident feeds are configurable under `ingestion.events` in `conf
 python scripts/build_events.py --start 2026-01-01T00:00:00+08:00 --end 2026-01-01T06:00:00+08:00 --cities Taipei
 ```
 
+API endpoints:
+
+- `GET /events`
+- `GET /events/{event_id}`
+- `GET /events/{event_id}/impact`
+
+Offline helper:
+
+```bash
+python scripts/build_event_impacts.py --limit-events 200
+```
+
 ## Aggregate Observations (Phase 1)
 
 Convert `5-min` observations into `15-min` or `hourly` series (config-driven):
