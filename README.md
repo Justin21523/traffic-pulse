@@ -53,6 +53,14 @@ Convert `5-min` observations into `15-min` or `hourly` series (config-driven):
 python scripts/aggregate_observations.py
 ```
 
+## Reliability Rankings (Phase 1)
+
+Compute basic reliability metrics (mean speed, speed variability, congestion frequency) and a weighted ranking score:
+
+```bash
+python scripts/build_reliability_rankings.py --limit 200
+```
+
 ## Notes
 
 - All implementation, docstrings, and documentation in this repo are written in English.

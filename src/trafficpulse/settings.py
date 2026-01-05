@@ -108,6 +108,7 @@ class ReliabilityWeights(BaseModel):
 class ReliabilitySection(BaseModel):
     congestion_speed_threshold_kph: float = 30
     min_samples: int = 12
+    default_window_hours: int = 24
     weights: ReliabilityWeights = Field(default_factory=ReliabilityWeights)
 
 
