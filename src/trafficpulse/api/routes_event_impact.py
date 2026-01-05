@@ -152,8 +152,8 @@ def get_event_impact(
 
     event_model = TrafficEvent(
         event_id=str(event.get("event_id")),
-        start_time=event.get("start_time").to_pydatetime(),
-        end_time=(event.get("end_time").to_pydatetime() if not pd.isna(event.get("end_time")) else None),
+        start_time=impact["start_time"],
+        end_time=impact["end_time"],
         event_type=(None if pd.isna(event.get("event_type")) else event.get("event_type")),
         description=(None if pd.isna(event.get("description")) else event.get("description")),
         road_name=(None if pd.isna(event.get("road_name")) else event.get("road_name")),
@@ -197,4 +197,3 @@ def get_event_impact(
         affected_segments=affected_segments,
         timeseries=timeseries,
     )
-

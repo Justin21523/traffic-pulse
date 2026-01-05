@@ -29,6 +29,10 @@ const rankingLimitEl = document.getElementById("ranking-limit");
 const loadRankingsButton = document.getElementById("load-rankings");
 const rankingsEl = document.getElementById("rankings");
 
+const loadEventsButton = document.getElementById("load-events");
+const eventsEl = document.getElementById("events");
+const eventInfoEl = document.getElementById("event-info");
+
 const chartEl = document.getElementById("chart");
 
 apiBaseEl.textContent = API_BASE;
@@ -40,6 +44,8 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 
 const markers = L.layerGroup().addTo(map);
+const eventMarkers = L.layerGroup().addTo(map);
+const impactSegmentsLayer = L.layerGroup().addTo(map);
 
 let segments = [];
 let segmentsById = new Map();
@@ -49,6 +55,11 @@ let selectedSegmentId = null;
 let corridors = [];
 let corridorsById = new Map();
 let selectedCorridorId = null;
+
+let events = [];
+let eventsById = new Map();
+let eventMarkerById = new Map();
+let selectedEventId = null;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -147,6 +158,39 @@ function updateCorridorInfo(corridor) {
   corridorInfoEl.textContent = parts.join("\n");
 }
 
+function updateEventInfo(event, impact) {
+  if (!event) {
+    eventInfoEl.textContent = "No event selected.";
+    return;
+  }
+
+  const parts = [];
+  parts.push(`ID: ${event.event_id}`);
+  if (event.event_type) parts.push(`Type: ${event.event_type}`);
+  if (event.road_name) parts.push(`Road: ${event.road_name}`);
+  if (event.direction) parts.push(`Direction: ${event.direction}`);
+  if (event.city) parts.push(`City: ${event.city}`);
+  if (event.severity != null) parts.push(`Severity: ${event.severity}`);
+  if (event.start_time) parts.push(`Start: ${event.start_time}`);
+  if (event.end_time) parts.push(`End: ${event.end_time}`);
+  if (event.lat != null && event.lon != null)
+    parts.push(`Location: ${Number(event.lat).toFixed(6)}, ${Number(event.lon).toFixed(6)}`);
+  if (event.description) parts.push(`Description: ${event.description}`);
+
+  if (impact) {
+    const baseline = impact.baseline_mean_speed_kph != null ? Number(impact.baseline_mean_speed_kph).toFixed(1) : "—";
+    const during = impact.event_mean_speed_kph != null ? Number(impact.event_mean_speed_kph).toFixed(1) : "—";
+    const delta = impact.speed_delta_mean_kph != null ? Number(impact.speed_delta_mean_kph).toFixed(1) : "—";
+    const rec = impact.recovery_minutes != null ? `${Math.round(Number(impact.recovery_minutes))} min` : "—";
+    parts.push(`Baseline mean speed: ${baseline} kph`);
+    parts.push(`Event mean speed: ${during} kph`);
+    parts.push(`Delta mean speed: ${delta} kph`);
+    parts.push(`Recovery: ${rec}`);
+  }
+
+  eventInfoEl.textContent = parts.join("\n");
+}
+
 async function fetchJson(url) {
   const resp = await fetch(url, { headers: { accept: "application/json" } });
   if (!resp.ok) {
@@ -182,6 +226,14 @@ function getEntityTitle(entity) {
   }
   const segment = segmentsById.get(entity.id);
   return segment ? formatSegmentLabel(segment) : String(entity.id);
+}
+
+function formatEventTimeLocal(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
 async function loadAnomalies(entity, range, minutes) {
@@ -311,6 +363,103 @@ function renderTimeseries(points, { title, anomalies } = {}) {
   setStatus(`Loaded ${points.length} points.`);
 }
 
+function renderEventImpactChart(impact) {
+  const points = impact.timeseries || [];
+  if (!points.length) {
+    Plotly.purge(chartEl);
+    setStatus("No time series available for this event impact.");
+    return;
+  }
+
+  const x = points.map((p) => p.timestamp);
+  const speed = points.map((p) => p.speed_kph);
+  const volume = points.map((p) => p.volume);
+
+  const baselineMean = impact.baseline_mean_speed_kph != null ? Number(impact.baseline_mean_speed_kph) : null;
+  const baselineLine = baselineMean != null ? x.map(() => baselineMean) : x.map(() => null);
+
+  const traces = [
+    {
+      x,
+      y: speed,
+      type: "scatter",
+      mode: "lines",
+      name: "Speed (kph)",
+      line: { color: "#4cc9f0", width: 2 },
+      yaxis: "y",
+    },
+    {
+      x,
+      y: volume,
+      type: "bar",
+      name: "Volume",
+      marker: { color: "rgba(255, 255, 255, 0.25)" },
+      yaxis: "y2",
+    },
+  ];
+
+  if (baselineMean != null) {
+    traces.push({
+      x,
+      y: baselineLine,
+      type: "scatter",
+      mode: "lines",
+      name: "Baseline mean",
+      line: { color: "rgba(255,255,255,0.55)", width: 1, dash: "dot" },
+      yaxis: "y",
+    });
+  }
+
+  const shapes = [];
+  if (impact.event && impact.event.start_time && impact.event.end_time) {
+    shapes.push({
+      type: "rect",
+      xref: "x",
+      yref: "paper",
+      x0: impact.event.start_time,
+      x1: impact.event.end_time,
+      y0: 0,
+      y1: 1,
+      fillcolor: "rgba(255, 77, 109, 0.10)",
+      line: { width: 0 },
+    });
+  }
+
+  const title = impact.event ? `Event ${impact.event.event_id}` : "Event impact";
+  const layout = {
+    title: { text: title, font: { size: 12, color: "rgba(255,255,255,0.85)" }, x: 0.02 },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    margin: { l: 48, r: 48, t: 32, b: 34 },
+    xaxis: {
+      type: "date",
+      gridcolor: "rgba(255,255,255,0.08)",
+      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+    },
+    yaxis: {
+      title: { text: "Speed (kph)", font: { size: 10, color: "rgba(255,255,255,0.75)" } },
+      gridcolor: "rgba(255,255,255,0.08)",
+      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+    },
+    yaxis2: {
+      title: { text: "Volume", font: { size: 10, color: "rgba(255,255,255,0.75)" } },
+      overlaying: "y",
+      side: "right",
+      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+      showgrid: false,
+    },
+    legend: {
+      orientation: "h",
+      x: 0.02,
+      y: 1.12,
+      font: { size: 10, color: "rgba(255,255,255,0.75)" },
+    },
+    shapes,
+  };
+
+  Plotly.react(chartEl, traces, layout, { responsive: true, displayModeBar: false });
+}
+
 async function loadTimeseries() {
   const entity = getSelectedEntity();
   if (!entity.id) {
@@ -371,6 +520,52 @@ function selectCorridor(corridorId) {
   const corridor = corridorsById.get(corridorId);
   updateCorridorInfo(corridor);
   corridorSelectEl.value = corridorId;
+}
+
+function selectEvent(eventId, { centerMap } = { centerMap: true }) {
+  selectedEventId = eventId;
+  const event = eventsById.get(eventId);
+  updateEventInfo(event, null);
+
+  impactSegmentsLayer.clearLayers();
+
+  const marker = eventMarkerById.get(eventId);
+  if (centerMap && marker) {
+    map.setView(marker.getLatLng(), Math.max(map.getZoom(), 14), { animate: true });
+    marker.openPopup();
+  }
+
+  if (!event) return;
+
+  const minutes = minutesEl.value;
+  const url = new URL(`${API_BASE}/events/${encodeURIComponent(eventId)}/impact`);
+  url.searchParams.set("include_timeseries", "true");
+  if (minutes) url.searchParams.set("minutes", minutes);
+
+  setStatus("Loading event impact...");
+  fetchJson(url.toString())
+    .then((impact) => {
+      updateEventInfo(event, impact);
+      renderEventImpactChart(impact);
+
+      if (impact.affected_segments && impact.affected_segments.length) {
+        for (const seg of impact.affected_segments) {
+          const m = L.circleMarker([seg.lat, seg.lon], {
+            radius: 5,
+            color: "#ff4d6d",
+            weight: 2,
+            fillColor: "rgba(255, 77, 109, 0.6)",
+            fillOpacity: 0.65,
+          }).addTo(impactSegmentsLayer);
+          m.bindPopup(`${seg.segment_id} (${Math.round(seg.distance_m)} m)`, { closeButton: false });
+        }
+      }
+
+      setStatus("Event impact loaded.");
+    })
+    .catch((err) => {
+      setStatus(`Failed to load event impact: ${err.message}`);
+    });
 }
 
 async function loadSegments() {
@@ -539,6 +734,107 @@ async function loadRankings() {
   }
 }
 
+function renderEvents(items) {
+  eventsEl.innerHTML = "";
+  if (!items || !items.length) {
+    eventsEl.textContent = "No events returned.";
+    return;
+  }
+
+  for (const event of items) {
+    const el = document.createElement("div");
+    el.className = "event-row";
+
+    const timeEl = document.createElement("div");
+    timeEl.className = "event-time";
+    timeEl.textContent = formatEventTimeLocal(event.start_time);
+
+    const mainEl = document.createElement("div");
+    mainEl.className = "event-main";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "event-title";
+    const title = event.road_name || event.event_type || "Event";
+    titleEl.textContent = title;
+
+    const subEl = document.createElement("div");
+    subEl.className = "event-sub";
+    const desc = event.description || event.event_id;
+    subEl.textContent = desc;
+
+    const badgeEl = document.createElement("div");
+    badgeEl.className = "event-badge";
+    badgeEl.textContent = event.severity != null ? `sev ${event.severity}` : "";
+
+    mainEl.appendChild(titleEl);
+    mainEl.appendChild(subEl);
+
+    el.appendChild(timeEl);
+    el.appendChild(mainEl);
+    el.appendChild(badgeEl);
+
+    el.addEventListener("click", () => selectEvent(event.event_id));
+    eventsEl.appendChild(el);
+  }
+}
+
+async function loadEvents() {
+  setStatus("Loading events...");
+  const url = new URL(`${API_BASE}/events`);
+
+  const range = getIsoRange();
+  if (range) {
+    url.searchParams.set("start", range.start);
+    url.searchParams.set("end", range.end);
+  }
+
+  const bounds = map.getBounds();
+  url.searchParams.set(
+    "bbox",
+    `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`
+  );
+  url.searchParams.set("limit", "1000");
+
+  try {
+    events = await fetchJson(url.toString());
+  } catch (err) {
+    eventsEl.textContent = "Failed to load events. Run scripts/build_events.py and check ingestion.events config.";
+    setStatus(`Failed to load events: ${err.message}`);
+    return;
+  }
+
+  eventsById = new Map(events.map((e) => [e.event_id, e]));
+
+  eventMarkers.clearLayers();
+  eventMarkerById.clear();
+  impactSegmentsLayer.clearLayers();
+  selectedEventId = null;
+  updateEventInfo(null, null);
+
+  for (const event of events) {
+    if (event.lat == null || event.lon == null) continue;
+    const lat = Number(event.lat);
+    const lon = Number(event.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    const marker = L.circleMarker([lat, lon], {
+      radius: 6,
+      color: "#ff4d6d",
+      weight: 2,
+      fillColor: "rgba(255, 77, 109, 0.7)",
+      fillOpacity: 0.7,
+    }).addTo(eventMarkers);
+
+    const label = `${event.event_id}${event.event_type ? ` - ${event.event_type}` : ""}`;
+    marker.bindPopup(label, { closeButton: false });
+    marker.on("click", () => selectEvent(event.event_id, { centerMap: false }));
+    eventMarkerById.set(event.event_id, marker);
+  }
+
+  renderEvents(events);
+  setStatus(`Loaded ${events.length} events.`);
+}
+
 segmentSearchEl.addEventListener("input", applySearchFilter);
 segmentSelectEl.addEventListener("change", () => {
   const segmentId = segmentSelectEl.value;
@@ -554,6 +850,7 @@ corridorSelectEl.addEventListener("change", () => {
 });
 loadButton.addEventListener("click", loadTimeseries);
 loadRankingsButton.addEventListener("click", loadRankings);
+loadEventsButton.addEventListener("click", loadEvents);
 
 setDefaultTimeRange();
 loadSegments();

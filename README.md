@@ -141,6 +141,8 @@ If you run the API, the static dashboard is served automatically:
 
 - `http://localhost:8000/`
 
+The dashboard can also load Traffic Events (Phase 3) via the Events panel once `data/processed/events.csv` is built.
+
 Alternatively, serve `web/` separately and point it to your API:
 
 ```bash

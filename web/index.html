@@ -112,11 +112,21 @@
         </div>
 
         <div class="panel">
+          <div class="panel-title">Events</div>
+          <div class="panel-body">
+            <button class="button" id="load-events">Load events (map bounds)</button>
+            <div class="events" id="events"></div>
+            <div class="segment-info" id="event-info">No event selected.</div>
+          </div>
+        </div>
+
+        <div class="panel">
           <div class="panel-title">Help</div>
           <div class="panel-body small">
             <ul class="list">
               <li>Click a marker on the map or use the dropdown to select a segment.</li>
               <li>Pick a time range and load the time series.</li>
+              <li>Use the Events panel to load incident markers and impact summaries.</li>
               <li>
                 You can override API base URL with <span class="mono">?api=http://localhost:8000</span>.
               </li>

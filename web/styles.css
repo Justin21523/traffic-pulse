@@ -160,6 +160,15 @@ input::placeholder {
   background: rgba(0, 0, 0, 0.18);
 }
 
+.events {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.18);
+}
+
 .ranking-row {
   display: grid;
   grid-template-columns: 44px 1fr 72px;
@@ -205,6 +214,56 @@ input::placeholder {
   text-align: right;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.8);
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: 92px 1fr 72px;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+
+.event-row:last-child {
+  border-bottom: none;
+}
+
+.event-row:hover {
+  background: rgba(255, 77, 109, 0.08);
+}
+
+.event-time {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.event-main {
+  min-width: 0;
+}
+
+.event-title {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.62);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.event-badge {
+  text-align: right;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .map {
