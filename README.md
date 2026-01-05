@@ -61,6 +61,12 @@ Compute basic reliability metrics (mean speed, speed variability, congestion fre
 python scripts/build_reliability_rankings.py --limit 200
 ```
 
+## Run the API (Phase 1)
+
+```bash
+python scripts/run_api.py
+```
+
 ## Notes
 
 - All implementation, docstrings, and documentation in this repo are written in English.
