@@ -78,6 +78,14 @@ analytics:
     # - static: use per-segment weight from corridors_csv
     speed_weighting: volume
     weight_column: weight
+  anomalies:
+    # Explainable anomaly detection baseline (no ML): rolling z-score on speed.
+    method: rolling_zscore
+    window_points: 12
+    z_threshold: 3.0
+    direction: low # low | high | both
+    max_gap_minutes: 30
+    min_event_points: 2
 
 api:
   host: 0.0.0.0

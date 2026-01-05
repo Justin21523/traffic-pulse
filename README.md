@@ -78,6 +78,23 @@ API endpoints:
 - `GET /corridors`
 - `GET /rankings/reliability/corridors`
 
+## Anomalies (Phase 2)
+
+Explainable anomaly detection uses a rolling z-score baseline on speed (config-driven).
+
+Endpoints:
+
+- `GET /anomalies?segment_id=...&start=...&end=...&minutes=...`
+- `GET /anomalies/events?segment_id=...&start=...&end=...&minutes=...`
+- `GET /anomalies/corridors?corridor_id=...&start=...&end=...&minutes=...`
+- `GET /anomalies/corridors/events?corridor_id=...&start=...&end=...&minutes=...`
+
+Offline helper:
+
+```bash
+python scripts/detect_anomalies.py --segment-id <VDID> --start 2026-01-01T00:00:00+08:00 --end 2026-01-01T06:00:00+08:00
+```
+
 ## Run the API (Phase 1)
 
 ```bash

@@ -118,9 +118,19 @@ class CorridorsSection(BaseModel):
     weight_column: str = "weight"
 
 
+class AnomaliesSection(BaseModel):
+    method: str = "rolling_zscore"
+    window_points: int = 12
+    z_threshold: float = 3.0
+    direction: str = "low"  # low | high | both
+    max_gap_minutes: int = 30
+    min_event_points: int = 2
+
+
 class AnalyticsSection(BaseModel):
     reliability: ReliabilitySection = Field(default_factory=ReliabilitySection)
     corridors: CorridorsSection = Field(default_factory=CorridorsSection)
+    anomalies: AnomaliesSection = Field(default_factory=AnomaliesSection)
 
 
 class CorsSection(BaseModel):
