@@ -142,6 +142,16 @@ input::placeholder {
   transform: translateY(1px);
 }
 
+.button.secondary {
+  margin-top: 10px;
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.button.secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .segment-info {
   border-radius: 10px;
   border: 1px dashed rgba(255, 255, 255, 0.18);

@@ -33,6 +33,11 @@ const loadEventsButton = document.getElementById("load-events");
 const eventsEl = document.getElementById("events");
 const eventInfoEl = document.getElementById("event-info");
 
+const hotspotMetricEl = document.getElementById("hotspot-metric");
+const loadHotspotsButton = document.getElementById("load-hotspots");
+const clearHotspotsButton = document.getElementById("clear-hotspots");
+const hotspotInfoEl = document.getElementById("hotspot-info");
+
 const chartEl = document.getElementById("chart");
 
 apiBaseEl.textContent = API_BASE;
@@ -46,6 +51,7 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 const markers = L.layerGroup().addTo(map);
 const eventMarkers = L.layerGroup().addTo(map);
 const impactSegmentsLayer = L.layerGroup().addTo(map);
+const hotspotsLayer = L.layerGroup().addTo(map);
 
 let segments = [];
 let segmentsById = new Map();
@@ -60,6 +66,8 @@ let events = [];
 let eventsById = new Map();
 let eventMarkerById = new Map();
 let selectedEventId = null;
+
+let hotspotRows = [];
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -234,6 +242,158 @@ function formatEventTimeLocal(iso) {
   if (Number.isNaN(date.getTime())) return iso;
   const pad2 = (n) => String(n).padStart(2, "0");
   return `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function lerpColor(fromRgb, toRgb, t) {
+  const tt = clamp(t, 0, 1);
+  const r = Math.round(lerp(fromRgb[0], toRgb[0], tt));
+  const g = Math.round(lerp(fromRgb[1], toRgb[1], tt));
+  const b = Math.round(lerp(fromRgb[2], toRgb[2], tt));
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+function metricLabel(metric) {
+  switch (metric) {
+    case "mean_speed_kph":
+      return "Mean speed";
+    case "speed_std_kph":
+      return "Speed std";
+    case "congestion_frequency":
+      return "Congestion frequency";
+    default:
+      return metric;
+  }
+}
+
+function formatMetricValue(metric, value) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  const num = Number(value);
+  if (metric === "congestion_frequency") return `${Math.round(num * 100)}%`;
+  return `${num.toFixed(1)}`;
+}
+
+function computeMetricRange(rows, metric) {
+  const values = rows
+    .map((r) => (r ? Number(r[metric]) : NaN))
+    .filter((v) => Number.isFinite(v));
+  if (!values.length) return { min: 0, max: 1 };
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) max = min + 1;
+  return { min, max };
+}
+
+function updateHotspotInfo(text) {
+  hotspotInfoEl.textContent = text || "No hotspots loaded.";
+}
+
+function renderHotspots(rows, metric) {
+  hotspotsLayer.clearLayers();
+  if (!rows || !rows.length) {
+    updateHotspotInfo("No hotspots loaded.");
+    return;
+  }
+
+  const accent = [76, 201, 240];
+  const danger = [255, 77, 109];
+  const range = computeMetricRange(rows, metric);
+
+  let rendered = 0;
+  for (const row of rows) {
+    if (!row) continue;
+    const lat = Number(row.lat);
+    const lon = Number(row.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    const raw = row[metric];
+    const value = raw == null ? null : Number(raw);
+    let color = "rgba(255, 255, 255, 0.25)";
+    if (value != null && Number.isFinite(value)) {
+      if (metric === "congestion_frequency") {
+        color = lerpColor(accent, danger, clamp(value, 0, 1));
+      } else {
+        const t = (value - range.min) / (range.max - range.min);
+        color = lerpColor(danger, accent, t);
+      }
+    }
+
+    const marker = L.circleMarker([lat, lon], {
+      radius: 7,
+      color,
+      weight: 2,
+      fillColor: color,
+      fillOpacity: 0.78,
+    }).addTo(hotspotsLayer);
+
+    const label = metricLabel(metric);
+    const formatted = formatMetricValue(metric, value);
+    marker.bindPopup(`${row.segment_id} · ${label}: ${formatted}`, { closeButton: false });
+    marker.on("click", () => {
+      selectSegment(String(row.segment_id), { centerMap: false });
+      loadTimeseries();
+    });
+
+    rendered += 1;
+  }
+
+  const minText =
+    metric === "congestion_frequency"
+      ? `${Math.round(range.min * 100)}%`
+      : `${Number(range.min).toFixed(1)}`;
+  const maxText =
+    metric === "congestion_frequency"
+      ? `${Math.round(range.max * 100)}%`
+      : `${Number(range.max).toFixed(1)}`;
+  updateHotspotInfo(`Loaded ${rendered} segments.\nMetric: ${metricLabel(metric)}\nRange: ${minText} → ${maxText}`);
+}
+
+function clearHotspots() {
+  hotspotRows = [];
+  hotspotsLayer.clearLayers();
+  updateHotspotInfo("No hotspots loaded.");
+  setStatus("Hotspots cleared.");
+}
+
+async function loadHotspots() {
+  setStatus("Loading hotspots...");
+
+  const metric = hotspotMetricEl.value || "mean_speed_kph";
+  const url = new URL(`${API_BASE}/map/snapshot`);
+
+  const range = getIsoRange();
+  if (range) {
+    url.searchParams.set("start", range.start);
+    url.searchParams.set("end", range.end);
+  }
+
+  const minutes = minutesEl.value;
+  if (minutes) url.searchParams.set("minutes", minutes);
+
+  const bounds = map.getBounds();
+  url.searchParams.set(
+    "bbox",
+    `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`
+  );
+  url.searchParams.set("limit", "5000");
+
+  try {
+    hotspotRows = await fetchJson(url.toString());
+  } catch (err) {
+    updateHotspotInfo("Failed to load hotspots. Ensure the API includes /map/snapshot and a dataset is built.");
+    setStatus(`Failed to load hotspots: ${err.message}`);
+    return;
+  }
+
+  renderHotspots(hotspotRows, metric);
+  setStatus(`Hotspots loaded (${hotspotRows.length} rows).`);
 }
 
 async function loadAnomalies(entity, range, minutes) {
@@ -851,6 +1011,9 @@ corridorSelectEl.addEventListener("change", () => {
 loadButton.addEventListener("click", loadTimeseries);
 loadRankingsButton.addEventListener("click", loadRankings);
 loadEventsButton.addEventListener("click", loadEvents);
+loadHotspotsButton.addEventListener("click", loadHotspots);
+clearHotspotsButton.addEventListener("click", clearHotspots);
+hotspotMetricEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value));
 
 setDefaultTimeRange();
 loadSegments();

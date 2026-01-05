@@ -66,6 +66,12 @@ Offline helper:
 python scripts/build_event_impacts.py --limit-events 200
 ```
 
+## Map Hotspots (Phase 4)
+
+The API can compute a map snapshot (mean speed / congestion frequency) for the current map bounds and time window:
+
+- `GET /map/snapshot`
+
 ## Aggregate Observations (Phase 1)
 
 Convert `5-min` observations into `15-min` or `hourly` series (config-driven):

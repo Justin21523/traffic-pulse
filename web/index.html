@@ -89,6 +89,23 @@
         </div>
 
         <div class="panel">
+          <div class="panel-title">Hotspots</div>
+          <div class="panel-body">
+            <label class="field">
+              <span class="label">Metric</span>
+              <select id="hotspot-metric">
+                <option value="mean_speed_kph" selected>Mean speed (kph)</option>
+                <option value="congestion_frequency">Congestion frequency</option>
+                <option value="speed_std_kph">Speed std (kph)</option>
+              </select>
+            </label>
+            <button class="button" id="load-hotspots">Load hotspots (map bounds)</button>
+            <button class="button secondary" id="clear-hotspots">Clear hotspots</button>
+            <div class="segment-info" id="hotspot-info">No hotspots loaded.</div>
+          </div>
+        </div>
+
+        <div class="panel">
           <div class="panel-title">Rankings</div>
           <div class="panel-body">
             <label class="field">
@@ -126,6 +143,7 @@
             <ul class="list">
               <li>Click a marker on the map or use the dropdown to select a segment.</li>
               <li>Pick a time range and load the time series.</li>
+              <li>Load Hotspots to color segments by mean speed or congestion frequency.</li>
               <li>Use the Events panel to load incident markers and impact summaries.</li>
               <li>
                 You can override API base URL with <span class="mono">?api=http://localhost:8000</span>.
