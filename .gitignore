@@ -15,3 +15,8 @@ configs/corridors.csv
 # Local data (keep placeholders)
 data/*
 !data/**/.gitkeep
+
+# Generated reports/figures (keep placeholders)
+outputs/*
+!outputs/**/
+!outputs/**/.gitkeep

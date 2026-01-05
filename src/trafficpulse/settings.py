@@ -26,6 +26,7 @@ class PathsSection(BaseModel):
     raw_dir: Path = Path("data/raw")
     processed_dir: Path = Path("data/processed")
     cache_dir: Path = Path("data/cache")
+    outputs_dir: Path = Path("outputs")
 
 
 class CacheSection(BaseModel):
@@ -162,6 +163,7 @@ class AppConfig(BaseModel):
                 "raw_dir": _resolve_path(repo_root, self.paths.raw_dir),
                 "processed_dir": _resolve_path(repo_root, self.paths.processed_dir),
                 "cache_dir": _resolve_path(repo_root, self.paths.cache_dir),
+                "outputs_dir": _resolve_path(repo_root, self.paths.outputs_dir),
             }
         )
         updated_corridors = self.analytics.corridors.model_copy(

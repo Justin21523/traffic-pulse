@@ -95,6 +95,19 @@ Offline helper:
 python scripts/detect_anomalies.py --segment-id <VDID> --start 2026-01-01T00:00:00+08:00 --end 2026-01-01T06:00:00+08:00
 ```
 
+## Reports and Exports (Phase 2)
+
+Export a reproducible snapshot (CSV + `summary.json`) to `outputs/reports/`:
+
+```bash
+python scripts/export_report.py --include-corridors --limit 200
+```
+
+CSV export endpoints:
+
+- `GET /exports/reliability/segments.csv`
+- `GET /exports/reliability/corridors.csv`
+
 ## Run the API (Phase 1)
 
 ```bash

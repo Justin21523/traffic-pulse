@@ -6,6 +6,7 @@ paths:
   raw_dir: data/raw
   processed_dir: data/processed
   cache_dir: data/cache
+  outputs_dir: outputs
 
 cache:
   enabled: true
