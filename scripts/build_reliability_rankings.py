@@ -9,9 +9,12 @@ from trafficpulse.analytics.reliability import compute_reliability_rankings, rel
 from trafficpulse.logging_config import configure_logging
 from trafficpulse.settings import get_config
 from trafficpulse.storage.datasets import (
-    load_csv,
+    load_dataset,
+    observations_parquet_path,
     observations_csv_path,
+    reliability_rankings_parquet_path,
     reliability_rankings_csv_path,
+    save_parquet,
     save_csv,
 )
 from trafficpulse.utils.time import parse_datetime
@@ -23,6 +26,11 @@ def parse_args() -> argparse.Namespace:
         "--processed-dir",
         default=None,
         help="Processed directory containing observations CSVs (default: config.paths.processed_dir).",
+    )
+    parser.add_argument(
+        "--parquet-dir",
+        default=None,
+        help="Parquet directory containing observations Parquet files (default: config.warehouse.parquet_dir).",
     )
     parser.add_argument(
         "--minutes",
@@ -44,6 +52,11 @@ def main() -> None:
     processed_dir = (
         Path(args.processed_dir) if args.processed_dir else config.paths.processed_dir
     )
+    parquet_dir = (
+        Path(args.parquet_dir)
+        if args.parquet_dir
+        else (processed_dir / "parquet" if args.processed_dir else config.warehouse.parquet_dir)
+    )
     minutes = (
         int(args.minutes)
         if args.minutes is not None
@@ -53,7 +66,10 @@ def main() -> None:
     start: Optional[datetime] = parse_datetime(args.start) if args.start else None
     end: Optional[datetime] = parse_datetime(args.end) if args.end else None
 
-    observations = load_csv(observations_csv_path(processed_dir, minutes))
+    observations = load_dataset(
+        observations_csv_path(processed_dir, minutes),
+        observations_parquet_path(parquet_dir, minutes),
+    )
     spec = reliability_spec_from_config(config)
     rankings = compute_reliability_rankings(
         observations, spec, start=start, end=end, limit=args.limit
@@ -61,10 +77,14 @@ def main() -> None:
 
     output_path = reliability_rankings_csv_path(processed_dir, minutes)
     save_csv(rankings, output_path)
+    if config.warehouse.enabled:
+        parquet_path = save_parquet(
+            rankings, reliability_rankings_parquet_path(parquet_dir, minutes)
+        )
+        print(f"Saved reliability rankings (Parquet): {parquet_path}")
     print(f"Saved reliability rankings: {output_path}")
     print(f"Rows: {len(rankings):,}")
 
 
 if __name__ == "__main__":
     main()
-

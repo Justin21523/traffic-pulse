@@ -29,6 +29,13 @@ class PathsSection(BaseModel):
     outputs_dir: Path = Path("outputs")
 
 
+class WarehouseSection(BaseModel):
+    enabled: bool = False
+    parquet_dir: Path = Path("data/processed/parquet")
+    duckdb_path: Path = Path("data/processed/trafficpulse.duckdb")
+    use_duckdb: bool = True
+
+
 class CacheSection(BaseModel):
     enabled: bool = True
     ttl_seconds: int = 3600
@@ -191,6 +198,7 @@ class ApiSection(BaseModel):
 class AppConfig(BaseModel):
     app: AppSection = Field(default_factory=AppSection)
     paths: PathsSection = Field(default_factory=PathsSection)
+    warehouse: WarehouseSection = Field(default_factory=WarehouseSection)
     cache: CacheSection = Field(default_factory=CacheSection)
     tdx: TdxSection = Field(default_factory=TdxSection)
     ingestion: IngestionSection = Field(default_factory=IngestionSection)
@@ -214,7 +222,19 @@ class AppConfig(BaseModel):
             }
         )
         updated_analytics = self.analytics.model_copy(update={"corridors": updated_corridors})
-        return self.model_copy(update={"paths": updated_paths, "analytics": updated_analytics})
+        updated_warehouse = self.warehouse.model_copy(
+            update={
+                "parquet_dir": _resolve_path(repo_root, self.warehouse.parquet_dir),
+                "duckdb_path": _resolve_path(repo_root, self.warehouse.duckdb_path),
+            }
+        )
+        return self.model_copy(
+            update={
+                "paths": updated_paths,
+                "warehouse": updated_warehouse,
+                "analytics": updated_analytics,
+            }
+        )
 
 
 def _maybe_load_dotenv() -> None:

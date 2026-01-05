@@ -14,7 +14,12 @@ from trafficpulse.analytics.anomalies import (
 from trafficpulse.analytics.corridors import aggregate_observations_to_corridors, load_corridors_csv
 from trafficpulse.logging_config import configure_logging
 from trafficpulse.settings import get_config
-from trafficpulse.storage.datasets import load_csv, observations_csv_path, save_csv
+from trafficpulse.storage.datasets import (
+    load_dataset,
+    observations_parquet_path,
+    observations_csv_path,
+    save_csv,
+)
 from trafficpulse.utils.time import parse_datetime
 
 
@@ -36,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         "--processed-dir",
         default=None,
         help="Processed directory containing observations CSVs (default: config.paths.processed_dir).",
+    )
+    parser.add_argument(
+        "--parquet-dir",
+        default=None,
+        help="Parquet directory containing observations Parquet files (default: config.warehouse.parquet_dir).",
     )
     parser.add_argument(
         "--output-dir",
@@ -64,9 +74,17 @@ def main() -> None:
     processed_dir = (
         Path(args.processed_dir) if args.processed_dir else config.paths.processed_dir
     )
+    parquet_dir = (
+        Path(args.parquet_dir)
+        if args.parquet_dir
+        else (processed_dir / "parquet" if args.processed_dir else config.warehouse.parquet_dir)
+    )
     output_dir = Path(args.output_dir) if args.output_dir else processed_dir
 
-    observations = load_csv(observations_csv_path(processed_dir, minutes))
+    observations = load_dataset(
+        observations_csv_path(processed_dir, minutes),
+        observations_parquet_path(parquet_dir, minutes),
+    )
     if observations.empty:
         raise SystemExit("observations dataset is empty.")
 
@@ -113,4 +131,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

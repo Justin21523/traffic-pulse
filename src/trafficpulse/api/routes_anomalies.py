@@ -15,7 +15,13 @@ from trafficpulse.analytics.anomalies import (
 )
 from trafficpulse.analytics.corridors import aggregate_observations_to_corridors, load_corridors_csv
 from trafficpulse.settings import get_config
-from trafficpulse.storage.datasets import load_csv, observations_csv_path
+from trafficpulse.storage.backend import duckdb_backend
+from trafficpulse.storage.datasets import (
+    load_csv,
+    load_parquet,
+    observations_parquet_path,
+    observations_csv_path,
+)
 from trafficpulse.utils.time import parse_datetime
 
 
@@ -44,22 +50,43 @@ class AnomalyEvent(BaseModel):
     mean_z_score: Optional[float] = None
 
 
-def _load_observations(minutes: Optional[int]) -> pd.DataFrame:
+def _load_observations(
+    minutes: Optional[int],
+    *,
+    segment_ids: Optional[list[str]] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+) -> pd.DataFrame:
     config = get_config()
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
     processed_dir = config.paths.processed_dir
+    parquet_dir = config.warehouse.parquet_dir
 
-    path = observations_csv_path(processed_dir, granularity_minutes)
-    if not path.exists():
-        fallback = observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes)
-        if fallback.exists():
-            path = fallback
-        else:
+    csv_path = observations_csv_path(processed_dir, granularity_minutes)
+    parquet_path = observations_parquet_path(parquet_dir, granularity_minutes)
+    if not csv_path.exists() and not parquet_path.exists():
+        fallback_minutes = int(config.preprocessing.source_granularity_minutes)
+        csv_path = observations_csv_path(processed_dir, fallback_minutes)
+        parquet_path = observations_parquet_path(parquet_dir, fallback_minutes)
+        granularity_minutes = fallback_minutes
+        if not csv_path.exists() and not parquet_path.exists():
             raise HTTPException(
                 status_code=404,
                 detail="observations dataset not found. Run scripts/build_dataset.py (and optionally scripts/aggregate_observations.py) first.",
             )
-    return load_csv(path)
+
+    backend = duckdb_backend(config)
+    if backend is not None and parquet_path.exists():
+        return backend.query_observations(
+            minutes=granularity_minutes,
+            segment_ids=segment_ids,
+            start=start,
+            end=end,
+        )
+
+    if config.warehouse.enabled and parquet_path.exists():
+        return load_parquet(parquet_path)
+    return load_csv(csv_path)
 
 
 @router.get("/anomalies", response_model=list[AnomalyPoint])
@@ -77,7 +104,7 @@ def segment_anomalies(
     if end_dt <= start_dt:
         raise HTTPException(status_code=400, detail="'end' must be greater than 'start'.")
 
-    observations = _load_observations(minutes)
+    observations = _load_observations(minutes, segment_ids=[str(segment_id)], start=start_dt, end=end_dt)
     if observations.empty:
         return []
 
@@ -118,7 +145,7 @@ def segment_anomaly_events(
     if end_dt <= start_dt:
         raise HTTPException(status_code=400, detail="'end' must be greater than 'start'.")
 
-    observations = _load_observations(minutes)
+    observations = _load_observations(minutes, segment_ids=[str(segment_id)], start=start_dt, end=end_dt)
     if observations.empty:
         return []
 
@@ -161,14 +188,15 @@ def corridor_anomalies(
     if end_dt <= start_dt:
         raise HTTPException(status_code=400, detail="'end' must be greater than 'start'.")
 
-    observations = _load_observations(minutes)
-    if observations.empty:
-        return []
-
     corridors = load_corridors_csv(config.analytics.corridors.corridors_csv)
     corridors = corridors[corridors["corridor_id"].astype(str) == str(corridor_id)]
     if corridors.empty:
         raise HTTPException(status_code=404, detail="corridor_id not found in corridors.csv.")
+
+    segment_ids = corridors["segment_id"].astype(str).unique().tolist()
+    observations = _load_observations(minutes, segment_ids=segment_ids, start=start_dt, end=end_dt)
+    if observations.empty:
+        return []
 
     corridor_ts = aggregate_observations_to_corridors(
         observations,
@@ -217,14 +245,15 @@ def corridor_anomaly_events(
     if end_dt <= start_dt:
         raise HTTPException(status_code=400, detail="'end' must be greater than 'start'.")
 
-    observations = _load_observations(minutes)
-    if observations.empty:
-        return []
-
     corridors = load_corridors_csv(config.analytics.corridors.corridors_csv)
     corridors = corridors[corridors["corridor_id"].astype(str) == str(corridor_id)]
     if corridors.empty:
         raise HTTPException(status_code=404, detail="corridor_id not found in corridors.csv.")
+
+    segment_ids = corridors["segment_id"].astype(str).unique().tolist()
+    observations = _load_observations(minutes, segment_ids=segment_ids, start=start_dt, end=end_dt)
+    if observations.empty:
+        return []
 
     corridor_ts = aggregate_observations_to_corridors(
         observations,
@@ -258,4 +287,3 @@ def corridor_anomaly_events(
     events["end_time"] = pd.to_datetime(events["end_time"], utc=True).dt.to_pydatetime()
     events = events.where(pd.notnull(events), None)
     return [AnomalyEvent(**record) for record in events.to_dict(orient="records")]
-

@@ -37,6 +37,22 @@ cp configs/corridors.example.csv configs/corridors.csv
 
 3) Fill in `.env` with your TDX credentials (`TDX_CLIENT_ID`, `TDX_CLIENT_SECRET`).
 
+## Warehouse (Phase 5)
+
+TrafficPulse can store processed datasets as Parquet and query them via embedded DuckDB (no external services).
+
+1) Enable the warehouse in `configs/config.yaml`:
+
+```yaml
+warehouse:
+  enabled: true
+  parquet_dir: data/processed/parquet
+  use_duckdb: true
+```
+
+2) Scripts will write Parquet datasets under `warehouse.parquet_dir` (in addition to CSV outputs).
+3) The API will prefer DuckDB+Parquet when available, and fall back to CSV otherwise.
+
 ## Build a VD Dataset (Phase 1)
 
 Install the package in editable mode so scripts can import `trafficpulse`:
@@ -147,7 +163,7 @@ If you run the API, the static dashboard is served automatically:
 
 - `http://localhost:8000/`
 
-The dashboard can also load Traffic Events (Phase 3) via the Events panel once `data/processed/events.csv` is built.
+The dashboard can also load Traffic Events (Phase 3) via the Events panel once `events` is built (CSV and/or Parquet).
 
 Alternatively, serve `web/` separately and point it to your API:
 

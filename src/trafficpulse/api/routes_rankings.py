@@ -9,7 +9,13 @@ from pydantic import BaseModel
 
 from trafficpulse.analytics.reliability import compute_reliability_rankings, reliability_spec_from_config
 from trafficpulse.settings import get_config
-from trafficpulse.storage.datasets import load_csv, observations_csv_path
+from trafficpulse.storage.backend import duckdb_backend
+from trafficpulse.storage.datasets import (
+    load_csv,
+    load_parquet,
+    observations_parquet_path,
+    observations_csv_path,
+)
 from trafficpulse.utils.time import parse_datetime
 
 
@@ -41,23 +47,15 @@ def reliability_rankings(
     config = get_config()
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
 
-    path = observations_csv_path(config.paths.processed_dir, granularity_minutes)
-    if not path.exists():
+    processed_dir = config.paths.processed_dir
+    parquet_dir = config.warehouse.parquet_dir
+    csv_path = observations_csv_path(processed_dir, granularity_minutes)
+    parquet_path = observations_parquet_path(parquet_dir, granularity_minutes)
+    if not csv_path.exists() and not parquet_path.exists():
         raise HTTPException(
             status_code=404,
             detail="observations dataset not found. Run scripts/build_dataset.py (and scripts/aggregate_observations.py) first.",
         )
-
-    df = load_csv(path)
-    if df.empty:
-        return []
-
-    if "timestamp" not in df.columns:
-        raise HTTPException(status_code=500, detail="observations dataset is missing 'timestamp' column.")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
-    df = df.dropna(subset=["timestamp"])
-
-    spec = reliability_spec_from_config(config)
 
     start_dt: Optional[datetime] = parse_datetime(start) if start else None
     end_dt: Optional[datetime] = parse_datetime(end) if end else None
@@ -69,18 +67,55 @@ def reliability_rankings(
 
     if start_dt is None and end_dt is None:
         window_hours = int(config.analytics.reliability.default_window_hours)
-        if not df["timestamp"].empty:
-            end_dt = df["timestamp"].max().to_pydatetime()
-            if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        backend = duckdb_backend(config)
+        if backend is not None and parquet_path.exists():
+            max_ts = backend.max_observation_timestamp(minutes=granularity_minutes)
+            if max_ts is not None:
+                end_dt = max_ts if max_ts.tzinfo is not None else max_ts.replace(tzinfo=timezone.utc)
+            else:
+                end_dt = datetime.now(timezone.utc)
+            start_dt = end_dt - timedelta(hours=window_hours)
         else:
-            end_dt = datetime.now(timezone.utc)
-        start_dt = end_dt - timedelta(hours=window_hours)
+            df = load_parquet(parquet_path) if config.warehouse.enabled and parquet_path.exists() else load_csv(csv_path)
+            if df.empty:
+                return []
+            if "timestamp" not in df.columns:
+                raise HTTPException(status_code=500, detail="observations dataset is missing 'timestamp' column.")
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+            df = df.dropna(subset=["timestamp"])
+            if not df["timestamp"].empty:
+                end_dt = df["timestamp"].max().to_pydatetime()
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+            else:
+                end_dt = datetime.now(timezone.utc)
+            start_dt = end_dt - timedelta(hours=window_hours)
 
-    rankings = compute_reliability_rankings(df, spec, start=start_dt, end=end_dt, limit=limit)
+    spec = reliability_spec_from_config(config)
+
+    backend = duckdb_backend(config)
+    if backend is not None and parquet_path.exists():
+        observations = backend.query_observations(
+            minutes=granularity_minutes,
+            start=start_dt,
+            end=end_dt,
+            columns=["timestamp", "segment_id", "speed_kph"],
+        )
+    else:
+        observations = load_parquet(parquet_path) if config.warehouse.enabled and parquet_path.exists() else load_csv(csv_path)
+        if observations.empty:
+            return []
+        if "timestamp" not in observations.columns:
+            raise HTTPException(status_code=500, detail="observations dataset is missing 'timestamp' column.")
+        observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
+        observations = observations.dropna(subset=["timestamp"])
+
+    if observations.empty:
+        return []
+
+    rankings = compute_reliability_rankings(observations, spec, start=start_dt, end=end_dt, limit=limit)
     if rankings.empty:
         return []
 
     rankings = rankings.where(pd.notnull(rankings), None)
     return [ReliabilityRankingRow(**record) for record in rankings.to_dict(orient="records")]
-

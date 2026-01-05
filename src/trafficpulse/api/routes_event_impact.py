@@ -1,21 +1,32 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from trafficpulse.analytics.event_impact import compute_event_impact, event_impact_spec_from_config
+from trafficpulse.analytics.event_impact import (
+    compute_event_impact,
+    event_impact_spec_from_config,
+    select_nearby_segments,
+)
 from trafficpulse.ingestion.schemas import TrafficEvent
 from trafficpulse.settings import get_config
+from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
     events_csv_path,
+    events_parquet_path,
     load_csv,
+    load_parquet,
     observations_csv_path,
+    observations_parquet_path,
     segments_csv_path,
+    segments_parquet_path,
 )
+from trafficpulse.utils.time import to_utc
 
 
 router = APIRouter()
@@ -59,15 +70,31 @@ class EventImpactSummary(BaseModel):
 
 def _load_event_or_404(event_id: str) -> pd.Series:
     config = get_config()
-    path = events_csv_path(config.paths.processed_dir)
-    if not path.exists():
+    processed_dir = config.paths.processed_dir
+    parquet_dir = config.warehouse.parquet_dir
+    csv_path = events_csv_path(processed_dir)
+    parquet_path = events_parquet_path(parquet_dir)
+    backend = duckdb_backend(config)
+
+    df: pd.DataFrame
+    if backend is not None and parquet_path.exists():
+        df = backend.query_event_by_id(str(event_id))
+    elif config.warehouse.enabled and parquet_path.exists():
+        df = load_parquet(parquet_path)
+        df = df[df.get("event_id").astype(str) == str(event_id)] if "event_id" in df.columns else df.iloc[0:0]
+    else:
+        if not csv_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="events dataset not found. Run scripts/build_events.py first.",
+            )
+        df = load_csv(csv_path)
+
+    if df.empty:
         raise HTTPException(
             status_code=404,
-            detail="events dataset not found. Run scripts/build_events.py first.",
+            detail="event_id not found.",
         )
-    df = load_csv(path)
-    if df.empty:
-        raise HTTPException(status_code=404, detail="events dataset is empty.")
 
     if "event_id" not in df.columns or "start_time" not in df.columns:
         raise HTTPException(status_code=500, detail="events dataset is missing required columns.")
@@ -87,38 +114,50 @@ def _load_event_or_404(event_id: str) -> pd.Series:
 
 def _load_segments_or_404() -> pd.DataFrame:
     config = get_config()
-    path = segments_csv_path(config.paths.processed_dir)
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="segments dataset not found. Run scripts/build_dataset.py first.",
-        )
-    df = load_csv(path)
+    processed_dir = config.paths.processed_dir
+    parquet_dir = config.warehouse.parquet_dir
+    parquet_path = segments_parquet_path(parquet_dir)
+    csv_path = segments_csv_path(processed_dir)
+    backend = duckdb_backend(config)
+
+    if backend is not None and parquet_path.exists():
+        df = backend.query_segments(columns=["segment_id", "lat", "lon"])
+    elif config.warehouse.enabled and parquet_path.exists():
+        df = load_parquet(parquet_path)
+    else:
+        if not csv_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="segments dataset not found. Run scripts/build_dataset.py first.",
+            )
+        df = load_csv(csv_path)
+
     if df.empty:
         raise HTTPException(status_code=404, detail="segments dataset is empty.")
     return df
 
 
-def _load_observations_or_404(minutes: Optional[int]) -> pd.DataFrame:
+def _resolve_observations_paths(minutes: Optional[int]) -> tuple[int, Path, Path]:
     config = get_config()
     processed_dir = config.paths.processed_dir
+    parquet_dir = config.warehouse.parquet_dir
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
 
-    path = observations_csv_path(processed_dir, granularity_minutes)
-    if not path.exists():
-        fallback = observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes)
-        if fallback.exists():
-            path = fallback
+    csv_path = observations_csv_path(processed_dir, granularity_minutes)
+    parquet_path = observations_parquet_path(parquet_dir, granularity_minutes)
+    if not csv_path.exists() and not parquet_path.exists():
+        fallback_minutes = int(config.preprocessing.source_granularity_minutes)
+        csv_path = observations_csv_path(processed_dir, fallback_minutes)
+        parquet_path = observations_parquet_path(parquet_dir, fallback_minutes)
+        granularity_minutes = fallback_minutes
+        if csv_path.exists() or parquet_path.exists():
+            return granularity_minutes, parquet_path, csv_path
         else:
             raise HTTPException(
                 status_code=404,
                 detail="observations dataset not found. Run scripts/build_dataset.py first.",
             )
-
-    df = load_csv(path)
-    if df.empty:
-        raise HTTPException(status_code=404, detail="observations dataset is empty.")
-    return df
+    return granularity_minutes, parquet_path, csv_path
 
 
 @router.get("/events/{event_id}/impact", response_model=EventImpactSummary)
@@ -134,7 +173,55 @@ def get_event_impact(
 
     event = _load_event_or_404(event_id)
     segments = _load_segments_or_404()
-    observations = _load_observations_or_404(minutes)
+    resolved_minutes, obs_parquet, obs_csv = _resolve_observations_paths(minutes)
+
+    start_time = event.get("start_time")
+    end_time = event.get("end_time")
+    if pd.isna(start_time):
+        raise HTTPException(status_code=400, detail="event.start_time is required.")
+    start_dt = to_utc(start_time.to_pydatetime() if hasattr(start_time, "to_pydatetime") else start_time)
+
+    if pd.isna(end_time) or end_time is None:
+        end_dt = start_dt + timedelta(minutes=int(spec.end_time_fallback_minutes))
+    else:
+        end_dt = to_utc(end_time.to_pydatetime() if hasattr(end_time, "to_pydatetime") else end_time)
+        if end_dt <= start_dt:
+            end_dt = start_dt + timedelta(minutes=int(spec.end_time_fallback_minutes))
+
+    baseline_start = start_dt - timedelta(minutes=int(spec.baseline_window_minutes))
+    analysis_end = end_dt + timedelta(minutes=int(spec.recovery_horizon_minutes))
+
+    event_lat = event.get("lat")
+    event_lon = event.get("lon")
+    if pd.isna(event_lat) or pd.isna(event_lon):
+        raise HTTPException(status_code=400, detail="event.lat and event.lon are required for impact analysis.")
+
+    nearby = select_nearby_segments(
+        segments,
+        lat=float(event_lat),
+        lon=float(event_lon),
+        radius_meters=float(radius_meters or spec.radius_meters),
+        max_segments=int(max_segments or spec.max_segments),
+    )
+    if nearby.empty:
+        raise HTTPException(status_code=400, detail="No nearby segments found within radius.")
+    segment_ids = nearby["segment_id"].astype(str).unique().tolist()
+
+    backend = duckdb_backend(config)
+    if backend is not None and obs_parquet.exists():
+        observations = backend.query_observations(
+            minutes=resolved_minutes,
+            segment_ids=segment_ids,
+            start=baseline_start,
+            end=analysis_end,
+        )
+    elif config.warehouse.enabled and obs_parquet.exists():
+        observations = load_parquet(obs_parquet)
+    else:
+        observations = load_csv(obs_csv)
+
+    if observations.empty:
+        raise HTTPException(status_code=404, detail="observations dataset is empty.")
 
     try:
         impact: dict[str, Any] = compute_event_impact(
@@ -144,7 +231,7 @@ def get_event_impact(
             spec=spec,
             radius_meters=radius_meters,
             max_segments=max_segments,
-            minutes=minutes,
+            minutes=resolved_minutes,
             include_timeseries=include_timeseries,
         )
     except ValueError as exc:

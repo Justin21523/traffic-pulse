@@ -12,10 +12,14 @@ from trafficpulse.logging_config import configure_logging
 from trafficpulse.settings import get_config
 from trafficpulse.storage.datasets import (
     events_csv_path,
-    load_csv,
+    events_parquet_path,
+    load_dataset,
+    observations_parquet_path,
     observations_csv_path,
+    save_parquet,
     save_csv,
     segments_csv_path,
+    segments_parquet_path,
 )
 from trafficpulse.utils.time import parse_datetime
 
@@ -26,6 +30,11 @@ def parse_args() -> argparse.Namespace:
         "--processed-dir",
         default=None,
         help="Processed directory containing datasets (default: config.paths.processed_dir).",
+    )
+    parser.add_argument(
+        "--parquet-dir",
+        default=None,
+        help="Parquet directory containing datasets (default: config.warehouse.parquet_dir).",
     )
     parser.add_argument(
         "--minutes",
@@ -95,30 +104,41 @@ def main() -> None:
     processed_dir = (
         Path(args.processed_dir) if args.processed_dir else config.paths.processed_dir
     )
+    parquet_dir = (
+        Path(args.parquet_dir)
+        if args.parquet_dir
+        else (processed_dir / "parquet" if args.processed_dir else config.warehouse.parquet_dir)
+    )
     minutes = (
         int(args.minutes)
         if args.minutes is not None
         else int(config.preprocessing.target_granularity_minutes)
     )
 
-    events_path = events_csv_path(processed_dir)
-    if not events_path.exists():
+    events_csv = events_csv_path(processed_dir)
+    events_parquet = events_parquet_path(parquet_dir)
+    if not events_csv.exists() and not events_parquet.exists():
         raise SystemExit("events dataset not found. Run scripts/build_events.py first.")
-    segments_path = segments_csv_path(processed_dir)
-    if not segments_path.exists():
+
+    segments_csv = segments_csv_path(processed_dir)
+    segments_parquet = segments_parquet_path(parquet_dir)
+    if not segments_csv.exists() and not segments_parquet.exists():
         raise SystemExit("segments dataset not found. Run scripts/build_dataset.py first.")
 
-    observations_path = observations_csv_path(processed_dir, minutes)
-    if not observations_path.exists():
-        fallback = observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes)
-        if fallback.exists():
-            observations_path = fallback
+    obs_csv = observations_csv_path(processed_dir, minutes)
+    obs_parquet = observations_parquet_path(parquet_dir, minutes)
+    if not obs_csv.exists() and not obs_parquet.exists():
+        fallback_csv = observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes)
+        fallback_parquet = observations_parquet_path(parquet_dir, config.preprocessing.source_granularity_minutes)
+        if fallback_csv.exists() or fallback_parquet.exists():
+            obs_csv = fallback_csv
+            obs_parquet = fallback_parquet
         else:
             raise SystemExit("observations dataset not found. Run scripts/build_dataset.py first.")
 
-    events = load_csv(events_path)
-    segments = load_csv(segments_path)
-    observations = load_csv(observations_path)
+    events = load_dataset(events_csv, events_parquet)
+    segments = load_dataset(segments_csv, segments_parquet)
+    observations = load_dataset(obs_csv, obs_parquet)
 
     spec = event_impact_spec_from_config(config)
     window_hours = int(args.window_hours) if args.window_hours is not None else spec.default_window_hours
@@ -140,10 +160,13 @@ def main() -> None:
 
     output_path = Path(args.output) if args.output else (processed_dir / f"event_impacts_{minutes}min.csv")
     save_csv(impacts, output_path)
+    if config.warehouse.enabled:
+        parquet_out = parquet_dir / f"event_impacts_{minutes}min.parquet"
+        parquet_path = save_parquet(impacts, parquet_out)
+        print(f"Saved event impacts (Parquet): {parquet_path}")
     print(f"Saved event impacts: {output_path}")
     print(f"Rows: {len(impacts):,}")
 
 
 if __name__ == "__main__":
     main()
-

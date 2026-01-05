@@ -10,7 +10,13 @@ from pydantic import BaseModel
 from trafficpulse.ingestion.schemas import TrafficObservation
 from trafficpulse.analytics.corridors import aggregate_observations_to_corridors, load_corridors_csv
 from trafficpulse.settings import get_config
-from trafficpulse.storage.datasets import load_csv, observations_csv_path
+from trafficpulse.storage.backend import duckdb_backend
+from trafficpulse.storage.datasets import (
+    load_csv,
+    load_parquet,
+    observations_parquet_path,
+    observations_csv_path,
+)
 from trafficpulse.utils.time import parse_datetime, to_utc
 
 
@@ -43,18 +49,33 @@ def get_timeseries(
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
 
     processed_dir = config.paths.processed_dir
-    path = observations_csv_path(processed_dir, granularity_minutes)
-    if not path.exists():
-        fallback = observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes)
-        if fallback.exists():
-            path = fallback
-        else:
+    parquet_dir = config.warehouse.parquet_dir
+    csv_path = observations_csv_path(processed_dir, granularity_minutes)
+    parquet_path = observations_parquet_path(parquet_dir, granularity_minutes)
+
+    if not csv_path.exists() and not parquet_path.exists():
+        fallback_minutes = int(config.preprocessing.source_granularity_minutes)
+        csv_path = observations_csv_path(processed_dir, fallback_minutes)
+        parquet_path = observations_parquet_path(parquet_dir, fallback_minutes)
+        granularity_minutes = fallback_minutes
+        if not csv_path.exists() and not parquet_path.exists():
             raise HTTPException(
                 status_code=404,
                 detail="observations dataset not found. Run scripts/build_dataset.py (and optionally scripts/aggregate_observations.py) first.",
             )
 
-    df = load_csv(path)
+    backend = duckdb_backend(config)
+    if backend is not None and parquet_path.exists():
+        df = backend.query_observations(
+            minutes=granularity_minutes,
+            segment_ids=[str(segment_id)],
+            start=start_dt,
+            end=end_dt,
+        )
+    elif config.warehouse.enabled and parquet_path.exists():
+        df = load_parquet(parquet_path)
+    else:
+        df = load_csv(csv_path)
     if df.empty:
         return []
 
@@ -99,12 +120,16 @@ def get_corridor_timeseries(
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
 
     processed_dir = config.paths.processed_dir
-    path = observations_csv_path(processed_dir, granularity_minutes)
-    if not path.exists():
-        fallback = observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes)
-        if fallback.exists():
-            path = fallback
-        else:
+    parquet_dir = config.warehouse.parquet_dir
+    csv_path = observations_csv_path(processed_dir, granularity_minutes)
+    parquet_path = observations_parquet_path(parquet_dir, granularity_minutes)
+
+    if not csv_path.exists() and not parquet_path.exists():
+        fallback_minutes = int(config.preprocessing.source_granularity_minutes)
+        csv_path = observations_csv_path(processed_dir, fallback_minutes)
+        parquet_path = observations_parquet_path(parquet_dir, fallback_minutes)
+        granularity_minutes = fallback_minutes
+        if not csv_path.exists() and not parquet_path.exists():
             raise HTTPException(
                 status_code=404,
                 detail="observations dataset not found. Run scripts/build_dataset.py (and optionally scripts/aggregate_observations.py) first.",
@@ -121,7 +146,20 @@ def get_corridor_timeseries(
     if corridors.empty:
         raise HTTPException(status_code=404, detail="corridor_id not found in corridors.csv.")
 
-    df = load_csv(path)
+    segment_ids = set(corridors["segment_id"].astype(str).unique().tolist())
+
+    backend = duckdb_backend(config)
+    if backend is not None and parquet_path.exists():
+        df = backend.query_observations(
+            minutes=granularity_minutes,
+            segment_ids=list(segment_ids),
+            start=start_dt,
+            end=end_dt,
+        )
+    elif config.warehouse.enabled and parquet_path.exists():
+        df = load_parquet(parquet_path)
+    else:
+        df = load_csv(csv_path)
     if df.empty:
         return []
     if "timestamp" not in df.columns or "segment_id" not in df.columns:
@@ -134,7 +172,6 @@ def get_corridor_timeseries(
     start_utc = pd.Timestamp(to_utc(start_dt))
     end_utc = pd.Timestamp(to_utc(end_dt))
 
-    segment_ids = set(corridors["segment_id"].astype(str).unique().tolist())
     df = df[df["segment_id"].isin(segment_ids)]
     df = df[(df["timestamp"] >= start_utc) & (df["timestamp"] < end_utc)]
     if df.empty:

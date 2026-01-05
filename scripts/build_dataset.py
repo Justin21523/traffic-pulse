@@ -8,8 +8,11 @@ from trafficpulse.ingestion.tdx_traffic_client import TdxTrafficClient
 from trafficpulse.logging_config import configure_logging
 from trafficpulse.settings import get_config
 from trafficpulse.storage.datasets import (
+    observations_parquet_path,
     observations_csv_path,
+    save_parquet,
     save_csv,
+    segments_parquet_path,
     segments_csv_path,
 )
 from trafficpulse.utils.time import parse_datetime
@@ -30,6 +33,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override output directory (default: config.paths.processed_dir).",
     )
+    parser.add_argument(
+        "--parquet-dir",
+        default=None,
+        help="Override Parquet output directory (default: config.warehouse.parquet_dir).",
+    )
     return parser.parse_args()
 
 
@@ -40,6 +48,11 @@ def main() -> None:
     config = get_config()
     processed_dir = (
         Path(args.processed_dir) if args.processed_dir else config.paths.processed_dir
+    )
+    parquet_dir = (
+        Path(args.parquet_dir)
+        if args.parquet_dir
+        else (processed_dir / "parquet" if args.processed_dir else config.warehouse.parquet_dir)
     )
 
     start: datetime = parse_datetime(args.start)
@@ -62,7 +75,15 @@ def main() -> None:
     print(f"Segments rows: {len(segments):,}")
     print(f"Observation rows: {len(observations):,}")
 
+    if config.warehouse.enabled:
+        segments_parquet = save_parquet(segments, segments_parquet_path(parquet_dir))
+        observations_parquet = save_parquet(
+            observations,
+            observations_parquet_path(parquet_dir, config.preprocessing.source_granularity_minutes),
+        )
+        print(f"Saved segments (Parquet): {segments_parquet}")
+        print(f"Saved observations (Parquet): {observations_parquet}")
+
 
 if __name__ == "__main__":
     main()
-

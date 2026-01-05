@@ -14,7 +14,8 @@ from trafficpulse.analytics.reliability import reliability_spec_from_config
 from trafficpulse.logging_config import configure_logging
 from trafficpulse.settings import get_config
 from trafficpulse.storage.datasets import (
-    load_csv,
+    load_dataset,
+    observations_parquet_path,
     observations_csv_path,
     save_csv,
 )
@@ -27,6 +28,11 @@ def parse_args() -> argparse.Namespace:
         "--processed-dir",
         default=None,
         help="Processed directory containing observations CSVs (default: config.paths.processed_dir).",
+    )
+    parser.add_argument(
+        "--parquet-dir",
+        default=None,
+        help="Parquet directory containing observations Parquet files (default: config.warehouse.parquet_dir).",
     )
     parser.add_argument(
         "--minutes",
@@ -58,6 +64,11 @@ def main() -> None:
     processed_dir = (
         Path(args.processed_dir) if args.processed_dir else config.paths.processed_dir
     )
+    parquet_dir = (
+        Path(args.parquet_dir)
+        if args.parquet_dir
+        else (processed_dir / "parquet" if args.processed_dir else config.warehouse.parquet_dir)
+    )
     minutes = (
         int(args.minutes)
         if args.minutes is not None
@@ -73,7 +84,10 @@ def main() -> None:
     end: Optional[datetime] = parse_datetime(args.end) if args.end else None
 
     corridors = load_corridors_csv(corridors_path)
-    observations = load_csv(observations_csv_path(processed_dir, minutes))
+    observations = load_dataset(
+        observations_csv_path(processed_dir, minutes),
+        observations_parquet_path(parquet_dir, minutes),
+    )
 
     spec = reliability_spec_from_config(config)
     rankings = compute_corridor_reliability_rankings(
@@ -98,4 +112,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -8,7 +8,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from trafficpulse.ingestion.schemas import TrafficEvent
 from trafficpulse.settings import get_config
-from trafficpulse.storage.datasets import events_csv_path, load_csv
+from trafficpulse.storage.backend import duckdb_backend
+from trafficpulse.storage.datasets import events_csv_path, events_parquet_path, load_csv, load_parquet
 from trafficpulse.utils.time import parse_datetime
 
 
@@ -60,9 +61,9 @@ def list_events(
     limit: int = Query(default=500, ge=1, le=5000),
 ) -> list[TrafficEvent]:
     config = get_config()
-    df = _load_events_df()
-    if df.empty:
-        return []
+    backend = duckdb_backend(config)
+    parquet_path = events_parquet_path(config.warehouse.parquet_dir)
+    df: pd.DataFrame
 
     start_dt: Optional[datetime] = parse_datetime(start) if start else None
     end_dt: Optional[datetime] = parse_datetime(end) if end else None
@@ -74,13 +75,46 @@ def list_events(
 
     if start_dt is None and end_dt is None:
         window_hours = int(config.analytics.event_impact.default_window_hours)
-        if not df["start_time"].empty:
-            end_dt = df["start_time"].max().to_pydatetime()
-            if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        if backend is not None and parquet_path.exists():
+            max_start = backend.max_event_start_time()
+            if max_start is not None:
+                end_dt = max_start if max_start.tzinfo is not None else max_start.replace(tzinfo=timezone.utc)
+            else:
+                end_dt = datetime.now(timezone.utc)
         else:
-            end_dt = datetime.now(timezone.utc)
+            df_for_max = _load_events_df()
+            if not df_for_max.empty:
+                end_dt = df_for_max["start_time"].max().to_pydatetime()
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+            else:
+                end_dt = datetime.now(timezone.utc)
         start_dt = end_dt - timedelta(hours=window_hours)
+
+    bbox_tuple: Optional[tuple[float, float, float, float]] = None
+    if bbox:
+        try:
+            bbox_tuple = _parse_bbox(bbox)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if backend is not None and parquet_path.exists():
+        df = backend.query_events(start=start_dt, end=end_dt, city=city, bbox=bbox_tuple, limit=limit)
+    elif config.warehouse.enabled and parquet_path.exists():
+        df = load_parquet(parquet_path)
+    else:
+        df = _load_events_df()
+
+    if df.empty:
+        return []
+
+    if "start_time" not in df.columns or "event_id" not in df.columns:
+        raise HTTPException(status_code=500, detail="events dataset is missing required columns.")
+    df["start_time"] = pd.to_datetime(df["start_time"], errors="coerce", utc=True)
+    if "end_time" in df.columns:
+        df["end_time"] = pd.to_datetime(df["end_time"], errors="coerce", utc=True)
+    df["event_id"] = df["event_id"].astype(str)
+    df = df.dropna(subset=["event_id", "start_time"])
 
     df = df[(df["start_time"] >= pd.Timestamp(start_dt)) & (df["start_time"] < pd.Timestamp(end_dt))]
 
@@ -89,17 +123,19 @@ def list_events(
             raise HTTPException(status_code=500, detail="events dataset is missing 'city' column.")
         df = df[df["city"].astype(str) == city]
 
-    if bbox:
-        try:
-            min_lon, min_lat, max_lon, max_lat = _parse_bbox(bbox)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if bbox_tuple:
+        min_lon, min_lat, max_lon, max_lat = bbox_tuple
         if "lat" not in df.columns or "lon" not in df.columns:
             raise HTTPException(status_code=500, detail="events dataset is missing lat/lon columns.")
         df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
         df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
         df = df.dropna(subset=["lat", "lon"])
-        df = df[(df["lat"] >= min_lat) & (df["lat"] <= max_lat) & (df["lon"] >= min_lon) & (df["lon"] <= max_lon)]
+        df = df[
+            (df["lat"] >= min_lat)
+            & (df["lat"] <= max_lat)
+            & (df["lon"] >= min_lon)
+            & (df["lon"] <= max_lon)
+        ]
 
     df = df.sort_values("start_time", ascending=False).head(int(limit))
 
@@ -126,10 +162,29 @@ def list_events(
 
 @router.get("/events/{event_id}", response_model=TrafficEvent)
 def get_event(event_id: str) -> TrafficEvent:
-    df = _load_events_df()
-    df = df[df["event_id"].astype(str) == str(event_id)]
+    config = get_config()
+    backend = duckdb_backend(config)
+    parquet_path = events_parquet_path(config.warehouse.parquet_dir)
+
+    if backend is not None and parquet_path.exists():
+        df = backend.query_event_by_id(str(event_id))
+    elif config.warehouse.enabled and parquet_path.exists():
+        df = load_parquet(parquet_path)
+        df = df[df["event_id"].astype(str) == str(event_id)]
+    else:
+        df = _load_events_df()
+        df = df[df["event_id"].astype(str) == str(event_id)]
+
     if df.empty:
         raise HTTPException(status_code=404, detail="event_id not found.")
+
+    if "start_time" not in df.columns or "event_id" not in df.columns:
+        raise HTTPException(status_code=500, detail="events dataset is missing required columns.")
+    df["start_time"] = pd.to_datetime(df["start_time"], errors="coerce", utc=True)
+    if "end_time" in df.columns:
+        df["end_time"] = pd.to_datetime(df["end_time"], errors="coerce", utc=True)
+    df["event_id"] = df["event_id"].astype(str)
+    df = df.dropna(subset=["event_id", "start_time"])
 
     row = df.iloc[0].to_dict()
     keep = {
@@ -147,4 +202,3 @@ def get_event(event_id: str) -> TrafficEvent:
     }
     keep = {k: (None if pd.isna(v) else v) for k, v in keep.items()}
     return TrafficEvent(**keep)
-

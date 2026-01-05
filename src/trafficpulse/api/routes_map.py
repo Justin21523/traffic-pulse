@@ -9,7 +9,15 @@ from pydantic import BaseModel
 
 from trafficpulse.analytics.reliability import compute_reliability_metrics, reliability_spec_from_config
 from trafficpulse.settings import get_config
-from trafficpulse.storage.datasets import load_csv, observations_csv_path, segments_csv_path
+from trafficpulse.storage.backend import duckdb_backend
+from trafficpulse.storage.datasets import (
+    load_csv,
+    load_parquet,
+    observations_parquet_path,
+    observations_csv_path,
+    segments_csv_path,
+    segments_parquet_path,
+)
 from trafficpulse.utils.time import parse_datetime, to_utc
 
 
@@ -53,25 +61,47 @@ def get_map_snapshot(
     processed_dir = config.paths.processed_dir
 
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
-    obs_path = observations_csv_path(processed_dir, granularity_minutes)
-    if not obs_path.exists():
-        fallback = observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes)
-        if fallback.exists():
-            obs_path = fallback
-        else:
+    parquet_dir = config.warehouse.parquet_dir
+    obs_csv = observations_csv_path(processed_dir, granularity_minutes)
+    obs_parquet = observations_parquet_path(parquet_dir, granularity_minutes)
+    if not obs_csv.exists() and not obs_parquet.exists():
+        fallback_minutes = int(config.preprocessing.source_granularity_minutes)
+        obs_csv = observations_csv_path(processed_dir, fallback_minutes)
+        obs_parquet = observations_parquet_path(parquet_dir, fallback_minutes)
+        granularity_minutes = fallback_minutes
+        if not obs_csv.exists() and not obs_parquet.exists():
             raise HTTPException(
                 status_code=404,
                 detail="observations dataset not found. Run scripts/build_dataset.py (and scripts/aggregate_observations.py) first.",
             )
 
-    segments_path = segments_csv_path(processed_dir)
-    if not segments_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="segments dataset not found. Run scripts/build_dataset.py first.",
-        )
+    backend = duckdb_backend(config)
 
-    segments = load_csv(segments_path)
+    bbox_tuple: Optional[tuple[float, float, float, float]] = None
+    if bbox:
+        try:
+            bbox_tuple = _parse_bbox(bbox)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    segments: pd.DataFrame
+    segments_parquet = segments_parquet_path(parquet_dir)
+    segments_csv = segments_csv_path(processed_dir)
+    if backend is not None and segments_parquet.exists():
+        segments = backend.query_segments(
+            city=city,
+            bbox=bbox_tuple,
+            columns=["segment_id", "lat", "lon", "city"],
+        )
+    elif config.warehouse.enabled and segments_parquet.exists():
+        segments = load_parquet(segments_parquet)
+    else:
+        if not segments_csv.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="segments dataset not found. Run scripts/build_dataset.py first.",
+            )
+        segments = load_csv(segments_csv)
     if segments.empty:
         return []
 
@@ -90,11 +120,8 @@ def get_map_snapshot(
             raise HTTPException(status_code=500, detail="segments dataset is missing 'city' column.")
         segments = segments[segments["city"].astype(str) == str(city)]
 
-    if bbox:
-        try:
-            min_lon, min_lat, max_lon, max_lat = _parse_bbox(bbox)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if bbox_tuple:
+        min_lon, min_lat, max_lon, max_lat = bbox_tuple
         segments = segments[
             (segments["lat"] >= min_lat)
             & (segments["lat"] <= max_lat)
@@ -103,24 +130,6 @@ def get_map_snapshot(
         ]
 
     if segments.empty:
-        return []
-
-    observations = load_csv(obs_path)
-    if observations.empty:
-        return []
-
-    if "timestamp" not in observations.columns or "segment_id" not in observations.columns:
-        raise HTTPException(status_code=500, detail="observations dataset is missing required columns.")
-
-    observations["segment_id"] = observations["segment_id"].astype(str)
-    segment_ids = set(segments["segment_id"].astype(str).tolist())
-    observations = observations[observations["segment_id"].isin(segment_ids)]
-    if observations.empty:
-        return []
-
-    observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
-    observations = observations.dropna(subset=["timestamp"])
-    if observations.empty:
         return []
 
     start_dt: Optional[datetime] = parse_datetime(start) if start else None
@@ -132,13 +141,54 @@ def get_map_snapshot(
 
     if start_dt is None and end_dt is None:
         window_hours = int(config.analytics.reliability.default_window_hours)
-        if not observations["timestamp"].empty:
-            end_dt = observations["timestamp"].max().to_pydatetime()
-            if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        if backend is not None and obs_parquet.exists():
+            max_ts = backend.max_observation_timestamp(minutes=granularity_minutes)
+            if max_ts is not None:
+                end_dt = max_ts if max_ts.tzinfo is not None else max_ts.replace(tzinfo=timezone.utc)
+            else:
+                end_dt = datetime.now(timezone.utc)
         else:
-            end_dt = datetime.now(timezone.utc)
+            observations_for_max = load_parquet(obs_parquet) if config.warehouse.enabled and obs_parquet.exists() else load_csv(obs_csv)
+            if not observations_for_max.empty and "timestamp" in observations_for_max.columns:
+                observations_for_max["timestamp"] = pd.to_datetime(observations_for_max["timestamp"], errors="coerce", utc=True)
+                observations_for_max = observations_for_max.dropna(subset=["timestamp"])
+                if not observations_for_max["timestamp"].empty:
+                    end_dt = observations_for_max["timestamp"].max().to_pydatetime()
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=timezone.utc)
+                else:
+                    end_dt = datetime.now(timezone.utc)
+            else:
+                end_dt = datetime.now(timezone.utc)
         start_dt = end_dt - timedelta(hours=window_hours)
+
+    segment_ids = set(segments["segment_id"].astype(str).tolist())
+    if backend is not None and obs_parquet.exists():
+        observations = backend.query_observations(
+            minutes=granularity_minutes,
+            segment_ids=list(segment_ids),
+            start=start_dt,
+            end=end_dt,
+            columns=["timestamp", "segment_id", "speed_kph"],
+        )
+    else:
+        observations = load_parquet(obs_parquet) if config.warehouse.enabled and obs_parquet.exists() else load_csv(obs_csv)
+
+    if observations.empty:
+        return []
+
+    if "timestamp" not in observations.columns or "segment_id" not in observations.columns:
+        raise HTTPException(status_code=500, detail="observations dataset is missing required columns.")
+
+    observations["segment_id"] = observations["segment_id"].astype(str)
+    observations = observations[observations["segment_id"].isin(segment_ids)]
+    if observations.empty:
+        return []
+
+    observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
+    observations = observations.dropna(subset=["timestamp"])
+    if observations.empty:
+        return []
 
     spec = reliability_spec_from_config(config)
     metrics = compute_reliability_metrics(
@@ -163,4 +213,3 @@ def get_map_snapshot(
     merged["n_samples"] = pd.to_numeric(merged.get("n_samples"), errors="coerce").fillna(0).astype(int)
 
     return [SegmentSnapshot(**record) for record in merged.to_dict(orient="records")]
-

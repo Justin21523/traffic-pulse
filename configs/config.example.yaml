@@ -8,6 +8,13 @@ paths:
   cache_dir: data/cache
   outputs_dir: outputs
 
+warehouse:
+  # Embedded analytics-friendly storage (no external services): Parquet files + DuckDB query engine.
+  enabled: false
+  parquet_dir: data/processed/parquet
+  duckdb_path: data/processed/trafficpulse.duckdb
+  use_duckdb: true
+
 cache:
   enabled: true
   ttl_seconds: 3600
