@@ -70,6 +70,14 @@ analytics:
       mean_speed: 0.4
       speed_std: 0.3
       congestion_frequency: 0.3
+  corridors:
+    corridors_csv: configs/corridors.csv
+    # How to combine segment speeds into a corridor speed time series:
+    # - volume: volume-weighted mean per timestamp (fallback to mean if volume missing)
+    # - equal: simple mean across segments per timestamp
+    # - static: use per-segment weight from corridors_csv
+    speed_weighting: volume
+    weight_column: weight
 
 api:
   host: 0.0.0.0

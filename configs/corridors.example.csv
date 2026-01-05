@@ -1,0 +1,4 @@
+corridor_id,corridor_name,segment_id,weight
+TPX_NB_01,Example Corridor (Northbound),VD_000001,1.0
+TPX_NB_01,Example Corridor (Northbound),VD_000002,1.0
+TPX_SB_01,Example Corridor (Southbound),VD_000003,1.0

@@ -32,6 +32,7 @@ pip install -r requirements.txt
 ```bash
 cp configs/config.example.yaml configs/config.yaml
 cp .env.example .env
+cp configs/corridors.example.csv configs/corridors.csv
 ```
 
 3) Fill in `.env` with your TDX credentials (`TDX_CLIENT_ID`, `TDX_CLIENT_SECRET`).
@@ -60,6 +61,22 @@ Compute basic reliability metrics (mean speed, speed variability, congestion fre
 ```bash
 python scripts/build_reliability_rankings.py --limit 200
 ```
+
+## Corridors (Phase 2)
+
+Corridors are defined as curated lists of segments (VD IDs).
+
+1) Edit `configs/corridors.csv` (copied from `configs/corridors.example.csv`).
+2) Compute corridor rankings (optional offline output):
+
+```bash
+python scripts/build_corridor_rankings.py --limit 200
+```
+
+API endpoints:
+
+- `GET /corridors`
+- `GET /rankings/reliability/corridors`
 
 ## Run the API (Phase 1)
 

@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from trafficpulse.api.routes_rankings import router as rankings_router
+from trafficpulse.api.routes_corridors import router as corridors_router
 from trafficpulse.api.routes_segments import router as segments_router
 from trafficpulse.api.routes_timeseries import router as timeseries_router
 from trafficpulse.logging_config import configure_logging
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(segments_router, tags=["segments"])
     app.include_router(timeseries_router, tags=["timeseries"])
     app.include_router(rankings_router, tags=["rankings"])
+    app.include_router(corridors_router, tags=["corridors"])
 
     web_dir = project_root() / "web"
     if web_dir.exists():

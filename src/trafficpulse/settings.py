@@ -112,8 +112,15 @@ class ReliabilitySection(BaseModel):
     weights: ReliabilityWeights = Field(default_factory=ReliabilityWeights)
 
 
+class CorridorsSection(BaseModel):
+    corridors_csv: Path = Path("configs/corridors.csv")
+    speed_weighting: str = "volume"  # volume | equal | static
+    weight_column: str = "weight"
+
+
 class AnalyticsSection(BaseModel):
     reliability: ReliabilitySection = Field(default_factory=ReliabilitySection)
+    corridors: CorridorsSection = Field(default_factory=CorridorsSection)
 
 
 class CorsSection(BaseModel):
@@ -147,7 +154,13 @@ class AppConfig(BaseModel):
                 "cache_dir": _resolve_path(repo_root, self.paths.cache_dir),
             }
         )
-        return self.model_copy(update={"paths": updated_paths})
+        updated_corridors = self.analytics.corridors.model_copy(
+            update={
+                "corridors_csv": _resolve_path(repo_root, self.analytics.corridors.corridors_csv)
+            }
+        )
+        updated_analytics = self.analytics.model_copy(update={"corridors": updated_corridors})
+        return self.model_copy(update={"paths": updated_paths, "analytics": updated_analytics})
 
 
 def _maybe_load_dotenv() -> None:

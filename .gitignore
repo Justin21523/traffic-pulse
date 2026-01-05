@@ -10,8 +10,8 @@ build/
 
 # Local configs
 configs/config.yaml
+configs/corridors.csv
 
 # Local data (keep placeholders)
 data/*
 !data/**/.gitkeep
-
