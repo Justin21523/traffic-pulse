@@ -32,6 +32,30 @@
           </div>
         </div>
 
+        <div class="panel" data-panel-id="live">
+          <div class="panel-title">Live</div>
+          <div class="panel-body">
+            <div class="pill-row">
+              <span class="pill" id="freshness-pill">Unknown</span>
+              <span class="muted" id="freshness-text">Loading status...</span>
+            </div>
+            <label class="field">
+              <span class="label">Auto refresh</span>
+              <label class="check">
+                <input type="checkbox" id="live-auto-refresh" />
+                <span>Refresh hotspots + current chart</span>
+              </label>
+            </label>
+            <label class="field">
+              <span class="label">Refresh interval (seconds)</span>
+              <input id="live-interval-seconds" type="number" min="5" step="1" value="60" />
+            </label>
+            <div class="button-row">
+              <button class="button secondary" id="live-refresh">Refresh now</button>
+            </div>
+          </div>
+        </div>
+
         <div class="panel" data-panel-id="controls">
           <div class="panel-title">Controls</div>
           <div class="panel-body">
@@ -194,6 +218,14 @@
                 <option value="corridor">Corridor</option>
               </select>
             </label>
+            <label class="check">
+              <input type="checkbox" id="follow-latest" />
+              <span>Follow latest observations (live)</span>
+            </label>
+            <label class="field">
+              <span class="label">Live window (hours)</span>
+              <input id="live-window-hours" type="number" min="1" step="1" value="6" />
+            </label>
             <label class="field">
               <span class="label">Start (local)</span>
               <input id="start" type="datetime-local" />
@@ -225,6 +257,10 @@
                 <option value="speed_std_kph">Speed std (kph)</option>
               </select>
             </label>
+            <label class="check">
+              <input type="checkbox" id="hotspot-auto" />
+              <span>Auto reload on map move</span>
+            </label>
             <button class="button" id="load-hotspots">Load hotspots (map bounds)</button>
             <button class="button secondary" id="clear-hotspots">Clear hotspots</button>
             <div class="segment-info" id="hotspot-info">No hotspots loaded.</div>
@@ -239,6 +275,19 @@
               <select id="ranking-type">
                 <option value="segments" selected>Segments (unreliable)</option>
                 <option value="corridors">Corridors (unreliable)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">Search</span>
+              <input id="ranking-search" type="text" placeholder="Filter by ID/name" />
+            </label>
+            <label class="field">
+              <span class="label">Sort</span>
+              <select id="ranking-sort">
+                <option value="rank" selected>Rank</option>
+                <option value="score_desc">Score (desc)</option>
+                <option value="mean_speed_asc">Mean speed (asc)</option>
+                <option value="congestion_desc">Congestion freq (desc)</option>
               </select>
             </label>
             <label class="field">
@@ -258,6 +307,15 @@
           <div class="panel-title">Events</div>
           <div class="panel-body">
             <button class="button" id="load-events">Load events (map bounds)</button>
+            <label class="check">
+              <input type="checkbox" id="events-auto" />
+              <span>Auto reload on map move</span>
+            </label>
+            <label class="field">
+              <span class="label">Search</span>
+              <input id="events-search" type="text" placeholder="Filter by road/type/description" />
+            </label>
+            <button class="button secondary" id="clear-events">Clear events</button>
             <div class="events" id="events"></div>
             <div class="segment-info" id="event-info">No event selected.</div>
           </div>
@@ -283,7 +341,18 @@
       <div class="resizer-vertical" id="sidebar-resizer" title="Drag to resize"></div>
 
       <section class="content" id="content">
-        <div class="map" id="map"></div>
+        <div class="map" id="map">
+          <div class="map-legend hidden" id="hotspot-legend">
+            <div class="map-legend-title" id="hotspot-legend-title">Hotspots</div>
+            <div class="map-legend-scale">
+              <div class="map-legend-bar" id="hotspot-legend-bar"></div>
+              <div class="map-legend-labels">
+                <span id="hotspot-legend-min">—</span>
+                <span id="hotspot-legend-max">—</span>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="resizer-horizontal" id="chart-resizer" title="Drag to resize"></div>
         <div class="chart">
           <div class="chart-title">Time Series</div>

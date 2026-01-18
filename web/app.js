@@ -15,6 +15,12 @@ const sidebarEl = document.getElementById("sidebar");
 const sidebarResizerEl = document.getElementById("sidebar-resizer");
 const chartResizerEl = document.getElementById("chart-resizer");
 
+const freshnessPillEl = document.getElementById("freshness-pill");
+const freshnessTextEl = document.getElementById("freshness-text");
+const liveAutoRefreshEl = document.getElementById("live-auto-refresh");
+const liveIntervalSecondsEl = document.getElementById("live-interval-seconds");
+const liveRefreshEl = document.getElementById("live-refresh");
+
 const segmentSearchEl = document.getElementById("segment-search");
 const segmentSelectEl = document.getElementById("segment-select");
 const segmentInfoEl = document.getElementById("segment-info");
@@ -23,6 +29,8 @@ const corridorSelectEl = document.getElementById("corridor-select");
 const corridorInfoEl = document.getElementById("corridor-info");
 
 const entityTypeEl = document.getElementById("entity-type");
+const followLatestEl = document.getElementById("follow-latest");
+const liveWindowHoursEl = document.getElementById("live-window-hours");
 const startEl = document.getElementById("start");
 const endEl = document.getElementById("end");
 const minutesEl = document.getElementById("minutes");
@@ -32,15 +40,26 @@ const rankingTypeEl = document.getElementById("ranking-type");
 const rankingLimitEl = document.getElementById("ranking-limit");
 const loadRankingsButton = document.getElementById("load-rankings");
 const rankingsEl = document.getElementById("rankings");
+const rankingSearchEl = document.getElementById("ranking-search");
+const rankingSortEl = document.getElementById("ranking-sort");
 
 const loadEventsButton = document.getElementById("load-events");
 const eventsEl = document.getElementById("events");
 const eventInfoEl = document.getElementById("event-info");
+const eventsAutoEl = document.getElementById("events-auto");
+const eventsSearchEl = document.getElementById("events-search");
+const clearEventsButton = document.getElementById("clear-events");
 
 const hotspotMetricEl = document.getElementById("hotspot-metric");
 const loadHotspotsButton = document.getElementById("load-hotspots");
 const clearHotspotsButton = document.getElementById("clear-hotspots");
 const hotspotInfoEl = document.getElementById("hotspot-info");
+const hotspotAutoEl = document.getElementById("hotspot-auto");
+const hotspotLegendEl = document.getElementById("hotspot-legend");
+const hotspotLegendTitleEl = document.getElementById("hotspot-legend-title");
+const hotspotLegendBarEl = document.getElementById("hotspot-legend-bar");
+const hotspotLegendMinEl = document.getElementById("hotspot-legend-min");
+const hotspotLegendMaxEl = document.getElementById("hotspot-legend-max");
 
 const toggleAnomaliesEl = document.getElementById("toggle-anomalies");
 const toggleHotspotsEl = document.getElementById("toggle-hotspots");
@@ -151,11 +170,75 @@ let hotspotRows = [];
 let hotspotsLoaded = false;
 let eventsLoaded = false;
 let rankingsLoaded = false;
+let latestObservationMs = null;
+let latestObservationIso = null;
+let latestObservationMinutes = [];
+let lastRankings = [];
 
 let lastTimeseries = { entity: null, range: null, minutes: null, points: [], anomalies: null };
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setFreshness({ label, detail, level }) {
+  if (!freshnessPillEl || !freshnessTextEl) return;
+  freshnessPillEl.textContent = label;
+  freshnessTextEl.textContent = detail;
+  freshnessPillEl.classList.remove("good", "warn", "bad");
+  if (level) freshnessPillEl.classList.add(level);
+}
+
+function parseIsoToMs(text) {
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function formatAge(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s ago`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+  return `${(seconds / 3600).toFixed(1)}h ago`;
+}
+
+async function refreshUiStatus() {
+  if (!freshnessPillEl) return;
+  try {
+    const status = await fetchJson(`${API_BASE}/ui/status`);
+    const last = status.observations_last_timestamp_utc;
+    const minutes = status.observations_minutes_available || [];
+    latestObservationIso = last || null;
+    latestObservationMinutes = Array.isArray(minutes) ? minutes : [];
+    if (!last) {
+      setFreshness({
+        label: "No data",
+        detail: `No observations found. Built minutes: ${minutes.join(", ") || "none"}`,
+        level: "bad",
+      });
+      return;
+    }
+
+    const lastMs = parseIsoToMs(last);
+    latestObservationMs = lastMs;
+    const nowMs = Date.now();
+    if (lastMs == null) {
+      setFreshness({
+        label: "Unknown",
+        detail: `Last timestamp: ${String(last)} (minutes: ${minutes.join(", ") || "?"})`,
+        level: "warn",
+      });
+      return;
+    }
+
+    const ageSeconds = Math.max(0, (nowMs - lastMs) / 1000);
+    const level = ageSeconds <= 5 * 60 ? "good" : ageSeconds <= 60 * 60 ? "warn" : "bad";
+    setFreshness({
+      label: "Observations",
+      detail: `${formatAge(ageSeconds)} • last=${new Date(lastMs).toISOString()} • minutes=${minutes.join(", ")}`,
+      level,
+    });
+  } catch (err) {
+    setFreshness({ label: "Error", detail: `Failed to load /ui/status: ${err.message}`, level: "bad" });
+  }
 }
 
 function setLayerVisible(layer, visible) {
@@ -293,6 +376,84 @@ function initPanelCollapse() {
       saveUiState(uiState);
     });
   }
+}
+
+function getLiveConfigFromState() {
+  return {
+    enabled: Boolean(getNested(uiState, "live.autoRefresh", false)),
+    intervalSeconds: Number(getNested(uiState, "live.intervalSeconds", 60)),
+  };
+}
+
+function applyLiveStateToForm() {
+  if (!liveAutoRefreshEl || !liveIntervalSecondsEl) return;
+  const config = getLiveConfigFromState();
+  liveAutoRefreshEl.checked = Boolean(config.enabled);
+  if (Number.isFinite(config.intervalSeconds)) {
+    liveIntervalSecondsEl.value = String(Math.round(config.intervalSeconds));
+  }
+}
+
+let liveTimer = null;
+function stopLiveRefresh() {
+  if (liveTimer) window.clearInterval(liveTimer);
+  liveTimer = null;
+}
+
+function startLiveRefresh() {
+  stopLiveRefresh();
+  const config = getLiveConfigFromState();
+  if (!config.enabled) return;
+  const safe = clamp(Number.isFinite(config.intervalSeconds) ? config.intervalSeconds : 60, 5, 3600);
+  liveTimer = window.setInterval(() => {
+    refreshLiveNow({ silent: true });
+  }, safe * 1000);
+}
+
+async function refreshLiveNow({ silent } = { silent: false }) {
+  if (!silent) setStatus("Refreshing live views...");
+  await refreshUiStatus();
+  applyFollowLatestWindow();
+
+  if (hotspotsLoaded) {
+    await loadHotspots();
+  }
+
+  if (lastTimeseries && lastTimeseries.entity && lastTimeseries.entity.id) {
+    await loadTimeseries();
+  }
+
+  if (eventsLoaded && showEvents) {
+    await loadEvents();
+  }
+
+  if (!silent) setStatus("Live refresh complete.");
+}
+
+function initLivePanel() {
+  if (!liveAutoRefreshEl || !liveIntervalSecondsEl || !liveRefreshEl) return;
+
+  applyLiveStateToForm();
+  refreshUiStatus();
+  startLiveRefresh();
+
+  liveAutoRefreshEl.addEventListener("change", () => {
+    uiState.live = uiState.live || {};
+    uiState.live.autoRefresh = Boolean(liveAutoRefreshEl.checked);
+    saveUiState(uiState);
+    startLiveRefresh();
+  });
+
+  liveIntervalSecondsEl.addEventListener("change", () => {
+    const value = clamp(Number(liveIntervalSecondsEl.value || 60), 5, 3600);
+    liveIntervalSecondsEl.value = String(Math.round(value));
+    uiState.live = uiState.live || {};
+    uiState.live.intervalSeconds = Math.round(value);
+    saveUiState(uiState);
+    startLiveRefresh();
+  });
+
+  liveRefreshEl.addEventListener("click", () => refreshLiveNow({ silent: false }));
 }
 
 function parseNumberValue(text) {
@@ -851,15 +1012,26 @@ function setDefaultTimeRange() {
   const end = new Date(now.getTime());
   const start = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
-  const pad2 = (n) => String(n).padStart(2, "0");
-  const toLocalInputValue = (dt) => {
-    return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}T${pad2(
-      dt.getHours()
-    )}:${pad2(dt.getMinutes())}`;
-  };
-
   if (!startEl.value) startEl.value = toLocalInputValue(start);
   if (!endEl.value) endEl.value = toLocalInputValue(end);
+}
+
+function toLocalInputValue(dt) {
+  const pad2 = (n) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}T${pad2(
+    dt.getHours()
+  )}:${pad2(dt.getMinutes())}`;
+}
+
+function applyFollowLatestWindow() {
+  if (!followLatestEl || !followLatestEl.checked) return;
+  if (latestObservationMs == null) return;
+
+  const hours = clamp(Number(liveWindowHoursEl?.value || 6), 1, 168);
+  const endDt = new Date(latestObservationMs);
+  const startDt = new Date(endDt.getTime() - hours * 60 * 60 * 1000);
+  startEl.value = toLocalInputValue(startDt);
+  endEl.value = toLocalInputValue(endDt);
 }
 
 function updateSegmentInfo(segment) {
@@ -948,6 +1120,44 @@ function getIsoRange() {
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
+function applyTimeseriesStateToForm() {
+  if (!followLatestEl) return;
+  followLatestEl.checked = Boolean(getNested(uiState, "timeseries.followLatest", false));
+  if (liveWindowHoursEl) {
+    const hours = Number(getNested(uiState, "timeseries.liveWindowHours", 6));
+    if (Number.isFinite(hours)) liveWindowHoursEl.value = String(Math.round(hours));
+  }
+
+  const follow = Boolean(followLatestEl.checked);
+  startEl.disabled = follow;
+  endEl.disabled = follow;
+}
+
+function initTimeseriesFollowLatest() {
+  if (!followLatestEl) return;
+  applyTimeseriesStateToForm();
+  applyFollowLatestWindow();
+
+  followLatestEl.addEventListener("change", () => {
+    uiState.timeseries = uiState.timeseries || {};
+    uiState.timeseries.followLatest = Boolean(followLatestEl.checked);
+    saveUiState(uiState);
+    applyTimeseriesStateToForm();
+    applyFollowLatestWindow();
+  });
+
+  if (liveWindowHoursEl) {
+    liveWindowHoursEl.addEventListener("change", () => {
+      const value = clamp(Number(liveWindowHoursEl.value || 6), 1, 168);
+      liveWindowHoursEl.value = String(Math.round(value));
+      uiState.timeseries = uiState.timeseries || {};
+      uiState.timeseries.liveWindowHours = Math.round(value);
+      saveUiState(uiState);
+      applyFollowLatestWindow();
+    });
+  }
+}
+
 function getSelectedEntity() {
   const type = entityTypeEl.value || "segment";
   if (type === "corridor") return { type, id: selectedCorridorId };
@@ -1023,16 +1233,49 @@ function updateHotspotInfo(text) {
   hotspotInfoEl.textContent = text || "No hotspots loaded.";
 }
 
+function updateHotspotLegend(metric, range) {
+  if (!hotspotLegendEl || !hotspotLegendTitleEl || !hotspotLegendBarEl) return;
+  if (!metric || !range) {
+    hotspotLegendEl.classList.add("hidden");
+    return;
+  }
+
+  hotspotLegendEl.classList.remove("hidden");
+  hotspotLegendTitleEl.textContent = `Hotspots · ${metricLabel(metric)}`;
+
+  const accent = "rgba(76, 201, 240, 0.95)";
+  const danger = "rgba(255, 77, 109, 0.95)";
+  const gradient =
+    metric === "congestion_frequency"
+      ? `linear-gradient(90deg, ${accent}, ${danger})`
+      : `linear-gradient(90deg, ${danger}, ${accent})`;
+  hotspotLegendBarEl.style.background = gradient;
+
+  const minText =
+    metric === "congestion_frequency"
+      ? `${Math.round(range.min * 100)}%`
+      : `${Number(range.min).toFixed(1)}`;
+  const maxText =
+    metric === "congestion_frequency"
+      ? `${Math.round(range.max * 100)}%`
+      : `${Number(range.max).toFixed(1)}`;
+
+  if (hotspotLegendMinEl) hotspotLegendMinEl.textContent = minText;
+  if (hotspotLegendMaxEl) hotspotLegendMaxEl.textContent = maxText;
+}
+
 function renderHotspots(rows, metric) {
   hotspotsLayer.clearLayers();
   if (!rows || !rows.length) {
     updateHotspotInfo("No hotspots loaded.");
+    updateHotspotLegend(null, null);
     return;
   }
 
   const accent = [76, 201, 240];
   const danger = [255, 77, 109];
   const range = computeMetricRange(rows, metric);
+  updateHotspotLegend(metric, range);
 
   let rendered = 0;
   for (const row of rows) {
@@ -1087,6 +1330,7 @@ function clearHotspots() {
   hotspotRows = [];
   hotspotsLoaded = false;
   hotspotsLayer.clearLayers();
+  updateHotspotLegend(null, null);
   updateHotspotInfo("No hotspots loaded.");
   setStatus("Hotspots cleared.");
 }
@@ -1126,6 +1370,52 @@ async function loadHotspots() {
   hotspotsLoaded = true;
   renderHotspots(hotspotRows, metric);
   setStatus(`Hotspots loaded (${hotspotRows.length} rows).`);
+}
+
+function applyHotspotStateToForm() {
+  if (!hotspotAutoEl) return;
+  hotspotAutoEl.checked = Boolean(getNested(uiState, "hotspots.autoReload", false));
+}
+
+function initHotspotAutoReload() {
+  if (!hotspotAutoEl) return;
+  applyHotspotStateToForm();
+  hotspotAutoEl.addEventListener("change", () => {
+    uiState.hotspots = uiState.hotspots || {};
+    uiState.hotspots.autoReload = Boolean(hotspotAutoEl.checked);
+    saveUiState(uiState);
+  });
+
+  let timer = null;
+  let inFlight = false;
+  let pending = false;
+
+  const schedule = () => {
+    if (!hotspotAutoEl.checked) return;
+    if (!showHotspots) return;
+    if (!hotspotsLoaded) return;
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(async () => {
+      timer = null;
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      inFlight = true;
+      try {
+        await loadHotspots();
+      } finally {
+        inFlight = false;
+        if (pending) {
+          pending = false;
+          schedule();
+        }
+      }
+    }, 450);
+  };
+
+  map.on("moveend", schedule);
+  map.on("zoomend", schedule);
 }
 
 async function loadAnomalies(entity, range, minutes) {
@@ -1427,6 +1717,8 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   const event = eventsById.get(eventId);
   updateEventInfo(event, null);
 
+  if (eventsLoaded) renderEvents(events);
+
   impactSegmentsLayer.clearLayers();
 
   const marker = eventMarkerById.get(eventId);
@@ -1554,7 +1846,34 @@ function renderRankings(items, type) {
     return;
   }
 
-  for (const row of items) {
+  const q = normalizeText(rankingSearchEl ? rankingSearchEl.value : "");
+  let filtered = items;
+  if (q) {
+    filtered = items.filter((row) => {
+      if (type === "corridors") {
+        return (
+          normalizeText(row.corridor_id).includes(q) ||
+          normalizeText(row.corridor_name).includes(q)
+        );
+      }
+      return normalizeText(row.segment_id).includes(q);
+    });
+  }
+
+  const sortMode = rankingSortEl ? rankingSortEl.value : "rank";
+  const sorted = filtered.slice();
+  const byNumber = (v) => (v == null ? NaN : Number(v));
+  if (sortMode === "score_desc") {
+    sorted.sort((a, b) => (byNumber(b.reliability_score) || 0) - (byNumber(a.reliability_score) || 0));
+  } else if (sortMode === "mean_speed_asc") {
+    sorted.sort((a, b) => (byNumber(a.mean_speed_kph) || 0) - (byNumber(b.mean_speed_kph) || 0));
+  } else if (sortMode === "congestion_desc") {
+    sorted.sort(
+      (a, b) => (byNumber(b.congestion_frequency) || 0) - (byNumber(a.congestion_frequency) || 0)
+    );
+  }
+
+  for (const row of sorted) {
     const el = document.createElement("div");
     el.className = "ranking-row";
 
@@ -1584,12 +1903,16 @@ function renderRankings(items, type) {
       const name = row.corridor_name ? ` - ${row.corridor_name}` : "";
       idEl.textContent = `${row.corridor_id}${name}`;
       el.addEventListener("click", () => {
+        Array.from(rankingsEl.querySelectorAll(".ranking-row")).forEach((n) => n.classList.remove("selected"));
+        el.classList.add("selected");
         selectCorridor(row.corridor_id);
         loadTimeseries();
       });
     } else {
       idEl.textContent = row.segment_id;
       el.addEventListener("click", () => {
+        Array.from(rankingsEl.querySelectorAll(".ranking-row")).forEach((n) => n.classList.remove("selected"));
+        el.classList.add("selected");
         selectSegment(row.segment_id, { centerMap: true });
         loadTimeseries();
       });
@@ -1628,6 +1951,7 @@ async function loadRankings() {
   setStatus("Loading rankings...");
   try {
     const items = await fetchJson(url.toString());
+    lastRankings = items;
     renderRankings(items, type);
     rankingsLoaded = true;
     setStatus(`Loaded ${items.length} ranking rows.`);
@@ -1645,9 +1969,22 @@ function renderEvents(items) {
     return;
   }
 
-  for (const event of items) {
+  const q = normalizeText(eventsSearchEl ? eventsSearchEl.value : "");
+  const filtered = q
+    ? items.filter((event) => {
+        return (
+          normalizeText(event.event_id).includes(q) ||
+          normalizeText(event.road_name).includes(q) ||
+          normalizeText(event.event_type).includes(q) ||
+          normalizeText(event.description).includes(q)
+        );
+      })
+    : items;
+
+  for (const event of filtered) {
     const el = document.createElement("div");
     el.className = "event-row";
+    if (selectedEventId && event.event_id === selectedEventId) el.classList.add("selected");
 
     const timeEl = document.createElement("div");
     timeEl.className = "event-time";
@@ -1741,6 +2078,70 @@ async function loadEvents() {
   setStatus(`Loaded ${events.length} events.`);
 }
 
+function clearEvents() {
+  events = [];
+  eventsLoaded = false;
+  eventsById = new Map();
+  eventMarkers.clearLayers();
+  eventMarkerById.clear();
+  impactSegmentsLayer.clearLayers();
+  selectedEventId = null;
+  updateEventInfo(null, null);
+  if (eventsEl) eventsEl.textContent = "No events loaded.";
+  setStatus("Events cleared.");
+}
+
+function initEventsPanel() {
+  if (eventsAutoEl) {
+    eventsAutoEl.checked = Boolean(getNested(uiState, "events.autoReload", false));
+    eventsAutoEl.addEventListener("change", () => {
+      uiState.events = uiState.events || {};
+      uiState.events.autoReload = Boolean(eventsAutoEl.checked);
+      saveUiState(uiState);
+    });
+  }
+
+  if (eventsSearchEl) {
+    eventsSearchEl.addEventListener("input", () => {
+      if (eventsLoaded) renderEvents(events);
+    });
+  }
+
+  if (clearEventsButton) {
+    clearEventsButton.addEventListener("click", clearEvents);
+  }
+
+  let timer = null;
+  let inFlight = false;
+  let pending = false;
+  const schedule = () => {
+    if (!eventsAutoEl || !eventsAutoEl.checked) return;
+    if (!showEvents) return;
+    if (!eventsLoaded) return;
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(async () => {
+      timer = null;
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      inFlight = true;
+      try {
+        await loadEvents();
+      } finally {
+        inFlight = false;
+        if (pending) {
+          pending = false;
+          schedule();
+        }
+      }
+    }, 450);
+  };
+
+  map.on("moveend", schedule);
+  map.on("zoomend", schedule);
+}
+
 segmentSearchEl.addEventListener("input", applySearchFilter);
 segmentSelectEl.addEventListener("change", () => {
   const segmentId = segmentSelectEl.value;
@@ -1760,6 +2161,8 @@ loadEventsButton.addEventListener("click", loadEvents);
 loadHotspotsButton.addEventListener("click", loadHotspots);
 clearHotspotsButton.addEventListener("click", clearHotspots);
 hotspotMetricEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value));
+if (rankingSearchEl) rankingSearchEl.addEventListener("input", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
+if (rankingSortEl) rankingSortEl.addEventListener("change", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
 
 applyLayoutFromState();
 applyOverlayVisibility();
@@ -1768,6 +2171,10 @@ initPanelCollapse();
 initSettingsPanel();
 initShortcutsOverlay();
 initKeyboardShortcuts();
+initLivePanel();
+initHotspotAutoReload();
+initTimeseriesFollowLatest();
+initEventsPanel();
 
 loadUiDefaultsFromApi().then((defaults) => {
   if (defaults) applyDefaultsToForm(defaults);
