@@ -12,6 +12,10 @@ Why this matters:
 
 from __future__ import annotations
 
+# json is used to write small status payloads without heavy dependencies.
+import csv
+from datetime import datetime, timezone
+from pathlib import Path
 # We use Literal to constrain certain UI-controlled strings to a small, known set of values,
 # which behaves like an enum and prevents accidental typos from silently changing behavior.
 from typing import Literal
@@ -23,6 +27,9 @@ from pydantic import BaseModel, Field
 
 # The config is the single source of truth for all tunable parameters (thresholds, weights, windows).
 from trafficpulse.settings import get_config
+from trafficpulse.storage.backend import duckdb_backend
+from trafficpulse.storage.datasets import observations_csv_path, observations_parquet_path
+from trafficpulse.utils.time import parse_datetime, to_utc
 
 
 # This router is imported and included by `trafficpulse.api.app:create_app()`.
@@ -93,6 +100,129 @@ class UiSettings(BaseModel):
     warehouse: dict[str, object] = Field(default_factory=dict)
     # Enum-like values are returned so the UI can populate dropdowns consistently.
     enums: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class UiStatus(BaseModel):
+    """Lightweight dataset status used by the dashboard for 'freshness' indicators."""
+
+    generated_at_utc: datetime
+    observations_minutes_available: list[int] = Field(default_factory=list)
+    observations_last_timestamp_utc: datetime | None = None
+
+
+def _tail_csv_timestamp(path: Path) -> datetime | None:
+    """Return the timestamp value from the last non-empty row of a CSV (without loading the file)."""
+
+    if not path.exists():
+        return None
+    with path.open("rb") as f:
+        header = f.readline()
+        if not header:
+            return None
+        try:
+            header_cols = next(csv.reader([header.decode("utf-8", errors="ignore")]))
+        except Exception:
+            return None
+        try:
+            ts_index = header_cols.index("timestamp")
+        except ValueError:
+            return None
+
+        f.seek(0, 2)
+        end = f.tell()
+        if end <= 0:
+            return None
+
+        # Read backwards in chunks until we find at least one data line.
+        chunk_size = 8192
+        buffer = b""
+        pos = end
+        while pos > 0:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            buffer = f.read(read_size) + buffer
+            if b"\n" not in buffer:
+                continue
+            lines = buffer.splitlines()
+            # Walk from the end to find the last non-empty, non-header line.
+            for raw_line in reversed(lines):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                # Skip header line if it appears in the buffer.
+                if line == header.strip():
+                    continue
+                try:
+                    cols = next(csv.reader([line.decode("utf-8", errors="ignore")]))
+                except Exception:
+                    continue
+                if ts_index >= len(cols):
+                    continue
+                value = cols[ts_index].strip()
+                if not value:
+                    continue
+                try:
+                    return to_utc(parse_datetime(value))
+                except Exception:
+                    return None
+        return None
+
+
+def _max_observation_timestamp(config_minutes: int) -> datetime | None:
+    config = get_config()
+    processed_dir = config.paths.processed_dir
+    parquet_dir = config.warehouse.parquet_dir
+
+    obs_csv = observations_csv_path(processed_dir, int(config_minutes))
+    obs_parquet = observations_parquet_path(parquet_dir, int(config_minutes))
+
+    backend = duckdb_backend(config)
+    if backend is not None and obs_parquet.exists():
+        ts = backend.max_observation_timestamp(minutes=int(config_minutes))
+        if ts is None:
+            return None
+        return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+
+    if config.warehouse.enabled and obs_parquet.exists():
+        # Avoid importing pyarrow/pandas here; fall back to CSV tail if Parquet isn't queryable.
+        return None
+
+    return _tail_csv_timestamp(obs_csv)
+
+
+@router.get("/ui/status", response_model=UiStatus)
+def ui_status() -> UiStatus:
+    config = get_config()
+
+    minutes_candidates = sorted(
+        {
+            int(config.preprocessing.source_granularity_minutes),
+            int(config.preprocessing.target_granularity_minutes),
+            60,
+        }
+    )
+
+    processed_dir = config.paths.processed_dir
+    parquet_dir = config.warehouse.parquet_dir
+
+    available: list[int] = []
+    last_ts: datetime | None = None
+    for minutes in minutes_candidates:
+        csv_path = observations_csv_path(processed_dir, minutes)
+        parquet_path = observations_parquet_path(parquet_dir, minutes)
+        if not csv_path.exists() and not parquet_path.exists():
+            continue
+        available.append(minutes)
+        ts = _max_observation_timestamp(minutes)
+        if ts is not None and (last_ts is None or ts > last_ts):
+            last_ts = ts
+
+    return UiStatus(
+        generated_at_utc=datetime.now(timezone.utc),
+        observations_minutes_available=available,
+        observations_last_timestamp_utc=last_ts,
+    )
 
 
 @router.get("/ui/settings", response_model=UiSettings)

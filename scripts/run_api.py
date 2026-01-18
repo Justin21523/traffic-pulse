@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import _bootstrap  # noqa: F401
+
 import uvicorn
 
 from trafficpulse.settings import get_config
@@ -18,4 +20,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

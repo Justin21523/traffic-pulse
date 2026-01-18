@@ -201,11 +201,18 @@ CSV export endpoints:
 python scripts/run_api.py
 ```
 
+If you prefer running `uvicorn` directly without `pip install -e .`, use:
+
+```bash
+python -m uvicorn --app-dir src trafficpulse.api.app:app --host 127.0.0.1 --port 8000
+```
+
 ## Open the MVP Dashboard (Phase 1)
 
 If you run the API, the static dashboard is served automatically:
 
 - `http://localhost:8000/`
+- `http://localhost:8000/web/` (alias)
 
 The dashboard can also load Traffic Events (Phase 3) via the Events panel once `events` is built (CSV and/or Parquet).
 

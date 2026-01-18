@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from trafficpulse.api.routes_rankings import router as rankings_router
@@ -24,6 +25,10 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="TrafficPulse API", version="0.1.0")
 
+    @app.get("/healthz")
+    def healthz() -> dict[str, bool]:
+        return {"ok": True}
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.api.cors.allow_origins,
@@ -43,9 +48,16 @@ def create_app() -> FastAPI:
     app.include_router(map_router, tags=["map"])
     app.include_router(ui_router, tags=["ui"])
 
+    @app.get("/web")
+    def web_root_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/web/", status_code=307)
+
     web_dir = project_root() / "web"
     if web_dir.exists():
-        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
+        # Serve the UI from `/` and also from `/web` to match common expectations
+        # when the on-disk folder is named `web/`.
+        app.mount("/web", StaticFiles(directory=str(web_dir), html=True), name="web")
+        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="root")
 
     return app
 
