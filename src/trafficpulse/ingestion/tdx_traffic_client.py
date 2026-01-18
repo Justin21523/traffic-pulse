@@ -104,12 +104,36 @@ def _coerce_float(value: Any) -> Optional[float]:
     # Preserve None to distinguish "missing" from numeric zeros.
     if value is None:
         return None
+
     try:
         # Many APIs encode numbers as strings; float() handles both numbers and numeric strings.
         return float(value)
     except (TypeError, ValueError):
         # If conversion fails, treat as missing rather than crashing ingestion.
         return None
+
+
+def _sanitize_speed_kph(value: Optional[float]) -> Optional[float]:
+    """Return a cleaned speed value or None when the upstream value is a sentinel/outlier.
+
+    TDX VD feeds sometimes emit sentinel values (e.g., -99) to indicate missing/invalid readings.
+    Keeping them as numeric values pollutes rankings and map snapshots, so we normalize them to None.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    speed = float(value)
+    # Common sentinel and invalid values.
+    if speed <= -90:
+        return None
+    if speed < 0:
+        return None
+    # Guard against extreme outliers which are almost certainly bad sensor data.
+    if speed > 200:
+        return None
+    return speed
 
 
 def _get_by_path(record: dict[str, Any], path: str) -> Any:
@@ -1127,10 +1151,11 @@ class TdxTrafficClient:
                 if isinstance(flow_lanes, list):
                     lanes.extend([lane for lane in flow_lanes if isinstance(lane, dict)])
             if lanes:
-                return self._aggregate_lanes(lanes)
+                speed, volume, occupancy = self._aggregate_lanes(lanes)
+                return _sanitize_speed_kph(speed), volume, occupancy
 
         # Otherwise fall back to top-level fields, coercing types defensively.
-        speed = _coerce_float(record.get(config.lane_speed_field))
+        speed = _sanitize_speed_kph(_coerce_float(record.get(config.lane_speed_field)))
         volume = _coerce_float(record.get(config.lane_volume_field))
         occupancy = _coerce_float(record.get(config.lane_occupancy_field))
         return speed, volume, occupancy
@@ -1163,13 +1188,17 @@ class TdxTrafficClient:
 
             # Collect values for aggregation; we keep them as floats when present.
             if speed is not None:
-                lane_speeds.append(speed)
+                cleaned_speed = _sanitize_speed_kph(speed)
+                if cleaned_speed is not None:
+                    lane_speeds.append(cleaned_speed)
             if volume is not None:
                 lane_volumes.append(volume)
             # For weighted speed, we only use positive volumes to avoid dividing by zero or negatives.
             if speed is not None and volume is not None and volume > 0:
-                weighted_speed_sum += speed * volume
-                weighted_volume_sum += volume
+                cleaned_speed = _sanitize_speed_kph(speed)
+                if cleaned_speed is not None:
+                    weighted_speed_sum += cleaned_speed * volume
+                    weighted_volume_sum += volume
             if occupancy is not None:
                 lane_occupancies.append(occupancy)
 

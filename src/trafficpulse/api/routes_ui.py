@@ -14,6 +14,8 @@ from __future__ import annotations
 
 # json is used to write small status payloads without heavy dependencies.
 import csv
+import json
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 # We use Literal to constrain certain UI-controlled strings to a small, known set of values,
@@ -21,7 +23,8 @@ from pathlib import Path
 from typing import Literal
 
 # FastAPI's APIRouter lets us group related endpoints into a module and mount them in the main app.
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
+from fastapi.responses import StreamingResponse
 # Pydantic models define the JSON schema sent to the browser, which makes the API contract explicit.
 from pydantic import BaseModel, Field
 
@@ -108,6 +111,39 @@ class UiStatus(BaseModel):
     generated_at_utc: datetime
     observations_minutes_available: list[int] = Field(default_factory=list)
     observations_last_timestamp_utc: datetime | None = None
+
+
+class DatasetFileInfo(BaseModel):
+    path: str
+    exists: bool
+    size_bytes: int | None = None
+    mtime_utc: datetime | None = None
+
+
+class UiDiagnostics(BaseModel):
+    generated_at_utc: datetime
+    processed_dir: str
+    parquet_dir: str
+    corridors_csv: str
+    corridors_csv_exists: bool
+    segments_csv: DatasetFileInfo
+    observations_csv_files: list[DatasetFileInfo]
+    events_csv: DatasetFileInfo
+    cache_dir: str
+    live_loop_state: DatasetFileInfo
+    backfill_checkpoint: DatasetFileInfo
+
+
+def _file_info(path: Path) -> DatasetFileInfo:
+    if not path.exists():
+        return DatasetFileInfo(path=str(path), exists=False)
+    stat = path.stat()
+    return DatasetFileInfo(
+        path=str(path),
+        exists=True,
+        size_bytes=int(stat.st_size),
+        mtime_utc=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+    )
 
 
 def _tail_csv_timestamp(path: Path) -> datetime | None:
@@ -223,6 +259,55 @@ def ui_status() -> UiStatus:
         observations_minutes_available=available,
         observations_last_timestamp_utc=last_ts,
     )
+
+
+@router.get("/ui/diagnostics", response_model=UiDiagnostics)
+def ui_diagnostics() -> UiDiagnostics:
+    config = get_config()
+    processed_dir = config.paths.processed_dir
+    parquet_dir = config.warehouse.parquet_dir
+    cache_dir = config.paths.cache_dir
+
+    corridors_csv = config.analytics.corridors.corridors_csv
+    segments_csv = processed_dir / "segments.csv"
+    events_csv = processed_dir / "events.csv"
+
+    obs_files: list[DatasetFileInfo] = []
+    for path in sorted(processed_dir.glob("observations_*min.csv")):
+        obs_files.append(_file_info(path))
+
+    return UiDiagnostics(
+        generated_at_utc=datetime.now(timezone.utc),
+        processed_dir=str(processed_dir),
+        parquet_dir=str(parquet_dir),
+        corridors_csv=str(corridors_csv),
+        corridors_csv_exists=corridors_csv.exists(),
+        segments_csv=_file_info(segments_csv),
+        observations_csv_files=obs_files,
+        events_csv=_file_info(events_csv),
+        cache_dir=str(cache_dir),
+        live_loop_state=_file_info(cache_dir / "live_loop_state.json"),
+        backfill_checkpoint=_file_info(cache_dir / "backfill_checkpoint.json"),
+    )
+
+
+@router.get("/stream/status")
+def stream_status(
+    interval_seconds: int = Query(default=5, ge=1, le=60),
+    max_events: int | None = Query(default=None, ge=1, le=1000),
+) -> StreamingResponse:
+    async def event_stream():
+        sent = 0
+        while True:
+            status = ui_status().model_dump(mode="json")
+            payload = json.dumps(status, ensure_ascii=False)
+            yield f"data: {payload}\n\n".encode("utf-8")
+            sent += 1
+            if max_events is not None and sent >= int(max_events):
+                return
+            await asyncio.sleep(float(interval_seconds))
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/ui/settings", response_model=UiSettings)

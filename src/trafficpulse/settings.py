@@ -210,9 +210,36 @@ class CorsSection(BaseModel):
 
 
 class ApiSection(BaseModel):
+    class Cache(BaseModel):
+        enabled: bool = True
+        ttl_seconds: int = 60
+        include_paths: list[str] = Field(
+            default_factory=lambda: [
+                "/map/snapshot",
+                "/rankings/reliability",
+                "/rankings/reliability/corridors",
+                "/events",
+            ]
+        )
+
+    class RateLimit(BaseModel):
+        enabled: bool = True
+        window_seconds: int = 60
+        max_requests: int = 60
+        include_paths: list[str] = Field(
+            default_factory=lambda: [
+                "/map/snapshot",
+                "/rankings/reliability",
+                "/rankings/reliability/corridors",
+                "/events",
+            ]
+        )
+
     host: str = "0.0.0.0"
     port: int = 8000
     cors: CorsSection = Field(default_factory=CorsSection)
+    cache: Cache = Field(default_factory=Cache)
+    rate_limit: RateLimit = Field(default_factory=RateLimit)
 
 
 class AppConfig(BaseModel):

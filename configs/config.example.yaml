@@ -148,6 +148,23 @@ analytics:
 api:
   host: 0.0.0.0
   port: 8000
+  cache:
+    enabled: true
+    ttl_seconds: 60
+    include_paths:
+      - /map/snapshot
+      - /rankings/reliability
+      - /rankings/reliability/corridors
+      - /events
+  rate_limit:
+    enabled: true
+    window_seconds: 60
+    max_requests: 60
+    include_paths:
+      - /map/snapshot
+      - /rankings/reliability
+      - /rankings/reliability/corridors
+      - /events
   cors:
     allow_origins:
       - http://localhost:8000

@@ -96,6 +96,13 @@ def get_timeseries(
 
     keep_cols = [col for col in ["timestamp", "segment_id", "speed_kph", "volume", "occupancy_pct"] if col in df.columns]
     df = df[keep_cols].sort_values("timestamp").reset_index(drop=True)
+
+    # Normalize sentinel / invalid speed values so the JSON response is not misleading.
+    if "speed_kph" in df.columns:
+        speed = pd.to_numeric(df["speed_kph"], errors="coerce")
+        speed = speed.mask((speed < 0) | (speed > 200))
+        df["speed_kph"] = speed
+
     df = df.astype(object).where(pd.notnull(df), None)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.to_pydatetime()
 

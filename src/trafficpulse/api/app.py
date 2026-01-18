@@ -15,6 +15,12 @@ from trafficpulse.api.routes_map import router as map_router
 from trafficpulse.api.routes_segments import router as segments_router
 from trafficpulse.api.routes_timeseries import router as timeseries_router
 from trafficpulse.api.routes_ui import router as ui_router
+from trafficpulse.api.middleware import (
+    CacheConfig,
+    RateLimitConfig,
+    SimpleRateLimitMiddleware,
+    TtlResponseCacheMiddleware,
+)
 from trafficpulse.logging_config import configure_logging
 from trafficpulse.settings import get_config, project_root
 
@@ -28,6 +34,27 @@ def create_app() -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, bool]:
         return {"ok": True}
+
+    # Guard expensive endpoints and smooth UI-driven reload spikes.
+    if config.api.rate_limit.enabled:
+        app.add_middleware(
+            SimpleRateLimitMiddleware,
+            config=RateLimitConfig(
+                enabled=True,
+                window_seconds=float(config.api.rate_limit.window_seconds),
+                max_requests=int(config.api.rate_limit.max_requests),
+                include_paths=tuple(config.api.rate_limit.include_paths),
+            ),
+        )
+    if config.api.cache.enabled:
+        app.add_middleware(
+            TtlResponseCacheMiddleware,
+            config=CacheConfig(
+                enabled=True,
+                ttl_seconds=float(config.api.cache.ttl_seconds),
+                include_paths=tuple(config.api.cache.include_paths),
+            ),
+        )
 
     app.add_middleware(
         CORSMiddleware,

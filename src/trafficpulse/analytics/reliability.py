@@ -173,6 +173,8 @@ def compute_reliability_metrics(
     df[speed_col] = pd.to_numeric(df.get(speed_col), errors="coerce")
     # Drop rows without valid speed values; they should not affect metrics.
     df = df.dropna(subset=[speed_col])
+    # Drop known sentinel / invalid speed values (e.g., -99) and extreme outliers.
+    df = df[(df[speed_col] >= 0) & (df[speed_col] <= 200)]
     # If speed is entirely missing, return an empty metrics DataFrame rather than crashing.
     if df.empty:
         return pd.DataFrame(
