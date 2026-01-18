@@ -312,6 +312,16 @@
               <span>Auto reload on map move</span>
             </label>
             <label class="field">
+              <span class="label">Type</span>
+              <select id="events-type">
+                <option value="all" selected>All</option>
+              </select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="events-within-range" />
+              <span>Only within current time range</span>
+            </label>
+            <label class="field">
               <span class="label">Search</span>
               <input id="events-search" type="text" placeholder="Filter by road/type/description" />
             </label>
@@ -348,6 +358,7 @@
               <div class="map-legend-bar" id="hotspot-legend-bar"></div>
               <div class="map-legend-labels">
                 <span id="hotspot-legend-min">—</span>
+                <span id="hotspot-legend-mid">—</span>
                 <span id="hotspot-legend-max">—</span>
               </div>
             </div>

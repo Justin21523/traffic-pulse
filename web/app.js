@@ -47,6 +47,8 @@ const loadEventsButton = document.getElementById("load-events");
 const eventsEl = document.getElementById("events");
 const eventInfoEl = document.getElementById("event-info");
 const eventsAutoEl = document.getElementById("events-auto");
+const eventsTypeEl = document.getElementById("events-type");
+const eventsWithinRangeEl = document.getElementById("events-within-range");
 const eventsSearchEl = document.getElementById("events-search");
 const clearEventsButton = document.getElementById("clear-events");
 
@@ -59,6 +61,7 @@ const hotspotLegendEl = document.getElementById("hotspot-legend");
 const hotspotLegendTitleEl = document.getElementById("hotspot-legend-title");
 const hotspotLegendBarEl = document.getElementById("hotspot-legend-bar");
 const hotspotLegendMinEl = document.getElementById("hotspot-legend-min");
+const hotspotLegendMidEl = document.getElementById("hotspot-legend-mid");
 const hotspotLegendMaxEl = document.getElementById("hotspot-legend-max");
 
 const toggleAnomaliesEl = document.getElementById("toggle-anomalies");
@@ -1032,6 +1035,8 @@ function applyFollowLatestWindow() {
   const startDt = new Date(endDt.getTime() - hours * 60 * 60 * 1000);
   startEl.value = toLocalInputValue(startDt);
   endEl.value = toLocalInputValue(endDt);
+
+  if (eventsWithinRangeEl && eventsWithinRangeEl.checked) applyEventsFilters();
 }
 
 function updateSegmentInfo(segment) {
@@ -1241,7 +1246,14 @@ function updateHotspotLegend(metric, range) {
   }
 
   hotspotLegendEl.classList.remove("hidden");
-  hotspotLegendTitleEl.textContent = `Hotspots · ${metricLabel(metric)}`;
+  const unit = metric === "congestion_frequency" ? "%" : "kph";
+  const hint =
+    metric === "congestion_frequency"
+      ? "low → high"
+      : metric === "speed_std_kph"
+        ? "low variance → high variance"
+        : "slow → fast";
+  hotspotLegendTitleEl.textContent = `Hotspots · ${metricLabel(metric)} (${unit}) · ${hint}`;
 
   const accent = "rgba(76, 201, 240, 0.95)";
   const danger = "rgba(255, 77, 109, 0.95)";
@@ -1251,16 +1263,19 @@ function updateHotspotLegend(metric, range) {
       : `linear-gradient(90deg, ${danger}, ${accent})`;
   hotspotLegendBarEl.style.background = gradient;
 
-  const minText =
-    metric === "congestion_frequency"
-      ? `${Math.round(range.min * 100)}%`
-      : `${Number(range.min).toFixed(1)}`;
-  const maxText =
-    metric === "congestion_frequency"
-      ? `${Math.round(range.max * 100)}%`
-      : `${Number(range.max).toFixed(1)}`;
+  const mid = (Number(range.min) + Number(range.max)) / 2;
+  const toLabel = (value) => {
+    if (!Number.isFinite(Number(value))) return "—";
+    if (metric === "congestion_frequency") return `${Math.round(Number(value) * 100)}%`;
+    return `${Number(value).toFixed(1)}`;
+  };
+
+  const minText = toLabel(range.min);
+  const midText = toLabel(mid);
+  const maxText = toLabel(range.max);
 
   if (hotspotLegendMinEl) hotspotLegendMinEl.textContent = minText;
+  if (hotspotLegendMidEl) hotspotLegendMidEl.textContent = midText;
   if (hotspotLegendMaxEl) hotspotLegendMaxEl.textContent = maxText;
 }
 
@@ -1717,7 +1732,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   const event = eventsById.get(eventId);
   updateEventInfo(event, null);
 
-  if (eventsLoaded) renderEvents(events);
+  if (eventsLoaded) renderEvents(getFilteredEvents(events));
 
   impactSegmentsLayer.clearLayers();
 
@@ -1962,6 +1977,109 @@ async function loadRankings() {
   }
 }
 
+function _eventOverlapsRange(event, range) {
+  if (!range) return true;
+  const startMs = event?.start_time ? Date.parse(event.start_time) : NaN;
+  const endMs = event?.end_time ? Date.parse(event.end_time) : startMs;
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return true;
+  const rangeStartMs = Date.parse(range.start);
+  const rangeEndMs = Date.parse(range.end);
+  if (!Number.isFinite(rangeStartMs) || !Number.isFinite(rangeEndMs)) return true;
+  return startMs < rangeEndMs && endMs > rangeStartMs;
+}
+
+function getFilteredEvents(items) {
+  if (!items || !items.length) return [];
+
+  const q = normalizeText(eventsSearchEl ? eventsSearchEl.value : "");
+  const type = eventsTypeEl ? String(eventsTypeEl.value || "all") : "all";
+  const onlyWithinRange = Boolean(eventsWithinRangeEl && eventsWithinRangeEl.checked);
+  const range = onlyWithinRange ? getIsoRange() : null;
+
+  return items.filter((event) => {
+    if (!event) return false;
+
+    if (type !== "all" && String(event.event_type || "") !== type) return false;
+    if (range && !_eventOverlapsRange(event, range)) return false;
+
+    if (!q) return true;
+    return (
+      normalizeText(event.event_id).includes(q) ||
+      normalizeText(event.road_name).includes(q) ||
+      normalizeText(event.event_type).includes(q) ||
+      normalizeText(event.description).includes(q)
+    );
+  });
+}
+
+function populateEventsTypeOptions(items) {
+  if (!eventsTypeEl) return;
+  const prev = String(eventsTypeEl.value || "all");
+  const types = Array.from(
+    new Set(
+      (items || [])
+        .map((e) => (e && e.event_type ? String(e.event_type) : ""))
+        .filter((t) => t && t.trim())
+    )
+  ).sort((a, b) => a.localeCompare(b));
+
+  eventsTypeEl.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "all";
+  all.textContent = "All";
+  eventsTypeEl.appendChild(all);
+
+  for (const t of types) {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    eventsTypeEl.appendChild(opt);
+  }
+
+  eventsTypeEl.value = types.includes(prev) ? prev : "all";
+}
+
+function renderEventMarkers(items) {
+  eventMarkers.clearLayers();
+  eventMarkerById.clear();
+
+  for (const event of items) {
+    if (event.lat == null || event.lon == null) continue;
+    const lat = Number(event.lat);
+    const lon = Number(event.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+    const marker = L.circleMarker([lat, lon], {
+      radius: 6,
+      color: "#ff4d6d",
+      weight: 2,
+      fillColor: "rgba(255, 77, 109, 0.7)",
+      fillOpacity: 0.7,
+    }).addTo(eventMarkers);
+
+    const label = `${event.event_id}${event.event_type ? ` - ${event.event_type}` : ""}`;
+    marker.bindPopup(label, { closeButton: false });
+    marker.on("click", () => selectEvent(event.event_id, { centerMap: false }));
+    eventMarkerById.set(event.event_id, marker);
+  }
+}
+
+function applyEventsFilters() {
+  if (!eventsLoaded) return;
+  const filtered = getFilteredEvents(events);
+  renderEventMarkers(filtered);
+  renderEvents(filtered);
+
+  if (selectedEventId) {
+    const stillVisible = filtered.some((e) => e && e.event_id === selectedEventId);
+    if (!stillVisible) {
+      selectedEventId = null;
+      impactSegmentsLayer.clearLayers();
+      updateEventInfo(null, null);
+    }
+  }
+}
+
 function renderEvents(items) {
   eventsEl.innerHTML = "";
   if (!items || !items.length) {
@@ -1969,19 +2087,7 @@ function renderEvents(items) {
     return;
   }
 
-  const q = normalizeText(eventsSearchEl ? eventsSearchEl.value : "");
-  const filtered = q
-    ? items.filter((event) => {
-        return (
-          normalizeText(event.event_id).includes(q) ||
-          normalizeText(event.road_name).includes(q) ||
-          normalizeText(event.event_type).includes(q) ||
-          normalizeText(event.description).includes(q)
-        );
-      })
-    : items;
-
-  for (const event of filtered) {
+  for (const event of items) {
     const el = document.createElement("div");
     el.className = "event-row";
     if (selectedEventId && event.event_id === selectedEventId) el.classList.add("selected");
@@ -2048,34 +2154,12 @@ async function loadEvents() {
   eventsLoaded = true;
   eventsById = new Map(events.map((e) => [e.event_id, e]));
 
-  eventMarkers.clearLayers();
-  eventMarkerById.clear();
   impactSegmentsLayer.clearLayers();
   selectedEventId = null;
   updateEventInfo(null, null);
-
-  for (const event of events) {
-    if (event.lat == null || event.lon == null) continue;
-    const lat = Number(event.lat);
-    const lon = Number(event.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-
-    const marker = L.circleMarker([lat, lon], {
-      radius: 6,
-      color: "#ff4d6d",
-      weight: 2,
-      fillColor: "rgba(255, 77, 109, 0.7)",
-      fillOpacity: 0.7,
-    }).addTo(eventMarkers);
-
-    const label = `${event.event_id}${event.event_type ? ` - ${event.event_type}` : ""}`;
-    marker.bindPopup(label, { closeButton: false });
-    marker.on("click", () => selectEvent(event.event_id, { centerMap: false }));
-    eventMarkerById.set(event.event_id, marker);
-  }
-
-  renderEvents(events);
-  setStatus(`Loaded ${events.length} events.`);
+  populateEventsTypeOptions(events);
+  applyEventsFilters();
+  setStatus(`Loaded ${events.length} events (${getFilteredEvents(events).length} shown).`);
 }
 
 function clearEvents() {
@@ -2101,9 +2185,29 @@ function initEventsPanel() {
     });
   }
 
+  if (eventsTypeEl) {
+    eventsTypeEl.value = String(getNested(uiState, "events.type", "all"));
+    eventsTypeEl.addEventListener("change", () => {
+      uiState.events = uiState.events || {};
+      uiState.events.type = String(eventsTypeEl.value || "all");
+      saveUiState(uiState);
+      applyEventsFilters();
+    });
+  }
+
+  if (eventsWithinRangeEl) {
+    eventsWithinRangeEl.checked = Boolean(getNested(uiState, "events.onlyWithinRange", false));
+    eventsWithinRangeEl.addEventListener("change", () => {
+      uiState.events = uiState.events || {};
+      uiState.events.onlyWithinRange = Boolean(eventsWithinRangeEl.checked);
+      saveUiState(uiState);
+      applyEventsFilters();
+    });
+  }
+
   if (eventsSearchEl) {
     eventsSearchEl.addEventListener("input", () => {
-      if (eventsLoaded) renderEvents(events);
+      applyEventsFilters();
     });
   }
 
@@ -2163,6 +2267,8 @@ clearHotspotsButton.addEventListener("click", clearHotspots);
 hotspotMetricEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value));
 if (rankingSearchEl) rankingSearchEl.addEventListener("input", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
 if (rankingSortEl) rankingSortEl.addEventListener("change", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
+if (startEl) startEl.addEventListener("change", () => eventsWithinRangeEl?.checked && applyEventsFilters());
+if (endEl) endEl.addEventListener("change", () => eventsWithinRangeEl?.checked && applyEventsFilters());
 
 applyLayoutFromState();
 applyOverlayVisibility();
