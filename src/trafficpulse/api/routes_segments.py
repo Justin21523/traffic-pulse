@@ -45,5 +45,18 @@ def list_segments(city: Optional[str] = Query(default=None)) -> list[SegmentMeta
             raise HTTPException(status_code=500, detail="segments dataset is missing 'city' column.")
         df = df[df["city"].astype(str) == city]
 
-    df = df.where(pd.notnull(df), None)
+    # Ensure NaN in string columns becomes real `None` (not `float('nan')`) so Pydantic can validate.
+    df = df.astype(object).where(pd.notnull(df), None)
+
+    def _to_optional_str(value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    for col in ["segment_id", "name", "city", "direction", "road_name", "link_id"]:
+        if col in df.columns:
+            df[col] = df[col].map(_to_optional_str)
+
     return [SegmentMetadata(**record) for record in df.to_dict(orient="records")]
