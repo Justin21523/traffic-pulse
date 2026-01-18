@@ -264,6 +264,16 @@
             <button class="button" id="load-hotspots">Load hotspots (map bounds)</button>
             <button class="button secondary" id="clear-hotspots">Clear hotspots</button>
             <div class="segment-info" id="hotspot-info">No hotspots loaded.</div>
+            <div class="hint-box hidden" id="hotspot-hint">
+              <div class="hint-title">No hotspots returned</div>
+              <div class="hint-text" id="hotspot-hint-text">
+                Try increasing the time window or lowering the minimum samples threshold.
+              </div>
+              <div class="button-row">
+                <button class="button secondary" id="hotspot-quick-min-samples">Set Min samples = 1</button>
+                <button class="button secondary" id="hotspot-quick-24h">Use 24h window</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -300,6 +310,16 @@
             </label>
             <button class="button" id="load-rankings">Load rankings</button>
             <div class="rankings" id="rankings"></div>
+            <div class="hint-box hidden" id="rankings-hint">
+              <div class="hint-title">No rankings returned</div>
+              <div class="hint-text" id="rankings-hint-text">
+                Try increasing the time window or lowering the minimum samples threshold.
+              </div>
+              <div class="button-row">
+                <button class="button secondary" id="rankings-quick-min-samples">Set Min samples = 1</button>
+                <button class="button secondary" id="rankings-quick-24h">Use 24h window</button>
+              </div>
+            </div>
           </div>
         </div>
 

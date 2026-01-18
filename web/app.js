@@ -42,6 +42,10 @@ const loadRankingsButton = document.getElementById("load-rankings");
 const rankingsEl = document.getElementById("rankings");
 const rankingSearchEl = document.getElementById("ranking-search");
 const rankingSortEl = document.getElementById("ranking-sort");
+const rankingsHintEl = document.getElementById("rankings-hint");
+const rankingsHintTextEl = document.getElementById("rankings-hint-text");
+const rankingsQuickMinSamplesEl = document.getElementById("rankings-quick-min-samples");
+const rankingsQuick24hEl = document.getElementById("rankings-quick-24h");
 
 const loadEventsButton = document.getElementById("load-events");
 const eventsEl = document.getElementById("events");
@@ -57,6 +61,10 @@ const loadHotspotsButton = document.getElementById("load-hotspots");
 const clearHotspotsButton = document.getElementById("clear-hotspots");
 const hotspotInfoEl = document.getElementById("hotspot-info");
 const hotspotAutoEl = document.getElementById("hotspot-auto");
+const hotspotHintEl = document.getElementById("hotspot-hint");
+const hotspotHintTextEl = document.getElementById("hotspot-hint-text");
+const hotspotQuickMinSamplesEl = document.getElementById("hotspot-quick-min-samples");
+const hotspotQuick24hEl = document.getElementById("hotspot-quick-24h");
 const hotspotLegendEl = document.getElementById("hotspot-legend");
 const hotspotLegendTitleEl = document.getElementById("hotspot-legend-title");
 const hotspotLegendBarEl = document.getElementById("hotspot-legend-bar");
@@ -179,6 +187,7 @@ let latestObservationMinutes = [];
 let lastRankings = [];
 
 let lastTimeseries = { entity: null, range: null, minutes: null, points: [], anomalies: null };
+let lastEventsClearedReason = null;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -256,6 +265,101 @@ function applyOverlayVisibility() {
   setLayerVisible(hotspotsLayer, Boolean(showHotspots));
   setLayerVisible(eventMarkers, Boolean(showEvents));
   setLayerVisible(impactSegmentsLayer, Boolean(showImpact));
+}
+
+function setHintVisible(el, visible) {
+  if (!el) return;
+  if (visible) el.classList.remove("hidden");
+  else el.classList.add("hidden");
+}
+
+function getCurrentRangeOrNull() {
+  return getIsoRange();
+}
+
+function getRangeHours(range) {
+  if (!range) return null;
+  const startMs = Date.parse(range.start);
+  const endMs = Date.parse(range.end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  return (endMs - startMs) / (60 * 60 * 1000);
+}
+
+function setWindowHours(hours) {
+  const clamped = clamp(Number(hours), 1, 168);
+  if (followLatestEl && followLatestEl.checked && liveWindowHoursEl) {
+    liveWindowHoursEl.value = String(Math.round(clamped));
+    uiState.timeseries = uiState.timeseries || {};
+    uiState.timeseries.liveWindowHours = Math.round(clamped);
+    saveUiState(uiState);
+    applyFollowLatestWindow();
+    return;
+  }
+
+  const endVal = endEl && endEl.value ? new Date(endEl.value) : new Date();
+  const endMs = endVal instanceof Date && !Number.isNaN(endVal.getTime()) ? endVal.getTime() : Date.now();
+  const startMs = endMs - clamped * 60 * 60 * 1000;
+  startEl.value = toLocalInputValue(new Date(startMs));
+  endEl.value = toLocalInputValue(new Date(endMs));
+}
+
+function getEffectiveMinSamples() {
+  const raw = parseIntValue(reliabilityMinSamplesEl?.value);
+  if (raw != null) return raw;
+  const placeholder = parseIntValue(reliabilityMinSamplesEl?.placeholder);
+  return placeholder != null ? placeholder : null;
+}
+
+function quickSetMinSamplesOne() {
+  if (!reliabilityMinSamplesEl) return;
+  reliabilityMinSamplesEl.value = "1";
+  applySettingsFromForm({ refresh: true });
+  setStatus("Applied quick fix: Min samples = 1.");
+}
+
+function quickUse24hWindow() {
+  setWindowHours(24);
+  if (hotspotsLoaded) loadHotspots();
+  if (rankingsLoaded) loadRankings();
+  if (lastTimeseries && lastTimeseries.entity && lastTimeseries.entity.id) loadTimeseries();
+  if (eventsWithinRangeEl && eventsWithinRangeEl.checked) applyEventsFilters();
+  setStatus("Applied quick fix: 24h time window.");
+}
+
+function updateHotspotsHint({ empty }) {
+  if (!hotspotHintEl) return;
+  if (!empty) {
+    setHintVisible(hotspotHintEl, false);
+    return;
+  }
+
+  const range = getCurrentRangeOrNull();
+  const hours = getRangeHours(range);
+  const minSamples = getEffectiveMinSamples();
+  const parts = [];
+  if (hours != null) parts.push(`Window: ${hours.toFixed(1)}h`);
+  if (minSamples != null) parts.push(`Min samples: ${minSamples}`);
+  parts.push("Try: Set Min samples = 1, or use a wider time window (24h).");
+  if (hotspotHintTextEl) hotspotHintTextEl.textContent = parts.join(" • ");
+  setHintVisible(hotspotHintEl, true);
+}
+
+function updateRankingsHint({ empty }) {
+  if (!rankingsHintEl) return;
+  if (!empty) {
+    setHintVisible(rankingsHintEl, false);
+    return;
+  }
+
+  const range = getCurrentRangeOrNull();
+  const hours = getRangeHours(range);
+  const minSamples = getEffectiveMinSamples();
+  const parts = [];
+  if (hours != null) parts.push(`Window: ${hours.toFixed(1)}h`);
+  if (minSamples != null) parts.push(`Min samples: ${minSamples}`);
+  parts.push("Try: Set Min samples = 1, or use a wider time window (24h).");
+  if (rankingsHintTextEl) rankingsHintTextEl.textContent = parts.join(" • ");
+  setHintVisible(rankingsHintEl, true);
 }
 
 function applyLayoutFromState() {
@@ -415,11 +519,21 @@ function startLiveRefresh() {
 
 async function refreshLiveNow({ silent } = { silent: false }) {
   if (!silent) setStatus("Refreshing live views...");
+  const prevLatestMs = latestObservationMs;
   await refreshUiStatus();
   applyFollowLatestWindow();
 
-  if (hotspotsLoaded) {
+  const latestChanged = prevLatestMs != null && latestObservationMs != null && latestObservationMs !== prevLatestMs;
+  const shouldRefreshViews = !silent || latestChanged || prevLatestMs == null;
+
+  if (!shouldRefreshViews) return;
+
+  if (hotspotsLoaded && showHotspots) {
     await loadHotspots();
+  }
+
+  if (rankingsLoaded) {
+    await loadRankings();
   }
 
   if (lastTimeseries && lastTimeseries.entity && lastTimeseries.entity.id) {
@@ -1073,9 +1187,14 @@ function updateCorridorInfo(corridor) {
 
 function updateEventInfo(event, impact) {
   if (!event) {
-    eventInfoEl.textContent = "No event selected.";
+    if (lastEventsClearedReason) {
+      eventInfoEl.textContent = `No event selected.\n${lastEventsClearedReason}`;
+    } else {
+      eventInfoEl.textContent = "No event selected.";
+    }
     return;
   }
+  lastEventsClearedReason = null;
 
   const parts = [];
   parts.push(`ID: ${event.event_id}`);
@@ -1284,8 +1403,10 @@ function renderHotspots(rows, metric) {
   if (!rows || !rows.length) {
     updateHotspotInfo("No hotspots loaded.");
     updateHotspotLegend(null, null);
+    updateHotspotsHint({ empty: hotspotsLoaded });
     return;
   }
+  updateHotspotsHint({ empty: false });
 
   const accent = [76, 201, 240];
   const danger = [255, 77, 109];
@@ -1379,6 +1500,7 @@ async function loadHotspots() {
     hotspotsLoaded = false;
     updateHotspotInfo("Failed to load hotspots. Ensure the API includes /map/snapshot and a dataset is built.");
     setStatus(`Failed to load hotspots: ${err.message}`);
+    updateHotspotsHint({ empty: false });
     return;
   }
 
@@ -1858,8 +1980,10 @@ function renderRankings(items, type) {
   rankingsEl.innerHTML = "";
   if (!items || !items.length) {
     rankingsEl.textContent = "No rankings returned.";
+    updateRankingsHint({ empty: true });
     return;
   }
+  updateRankingsHint({ empty: false });
 
   const q = normalizeText(rankingSearchEl ? rankingSearchEl.value : "");
   let filtered = items;
@@ -1973,6 +2097,7 @@ async function loadRankings() {
   } catch (err) {
     rankingsLoaded = false;
     rankingsEl.textContent = "Failed to load rankings.";
+    updateRankingsHint({ empty: false });
     setStatus(`Failed to load rankings: ${err.message}`);
   }
 }
@@ -2075,6 +2200,7 @@ function applyEventsFilters() {
     if (!stillVisible) {
       selectedEventId = null;
       impactSegmentsLayer.clearLayers();
+      lastEventsClearedReason = "Event selection cleared (filtered out).";
       updateEventInfo(null, null);
     }
   }
@@ -2156,6 +2282,7 @@ async function loadEvents() {
 
   impactSegmentsLayer.clearLayers();
   selectedEventId = null;
+  lastEventsClearedReason = null;
   updateEventInfo(null, null);
   populateEventsTypeOptions(events);
   applyEventsFilters();
@@ -2170,6 +2297,7 @@ function clearEvents() {
   eventMarkerById.clear();
   impactSegmentsLayer.clearLayers();
   selectedEventId = null;
+  lastEventsClearedReason = null;
   updateEventInfo(null, null);
   if (eventsEl) eventsEl.textContent = "No events loaded.";
   setStatus("Events cleared.");
@@ -2246,6 +2374,13 @@ function initEventsPanel() {
   map.on("zoomend", schedule);
 }
 
+function initQuickGuides() {
+  if (hotspotQuickMinSamplesEl) hotspotQuickMinSamplesEl.addEventListener("click", quickSetMinSamplesOne);
+  if (hotspotQuick24hEl) hotspotQuick24hEl.addEventListener("click", quickUse24hWindow);
+  if (rankingsQuickMinSamplesEl) rankingsQuickMinSamplesEl.addEventListener("click", quickSetMinSamplesOne);
+  if (rankingsQuick24hEl) rankingsQuick24hEl.addEventListener("click", quickUse24hWindow);
+}
+
 segmentSearchEl.addEventListener("input", applySearchFilter);
 segmentSelectEl.addEventListener("change", () => {
   const segmentId = segmentSelectEl.value;
@@ -2281,6 +2416,7 @@ initLivePanel();
 initHotspotAutoReload();
 initTimeseriesFollowLatest();
 initEventsPanel();
+initQuickGuides();
 
 loadUiDefaultsFromApi().then((defaults) => {
   if (defaults) applyDefaultsToForm(defaults);
