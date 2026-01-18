@@ -20,6 +20,10 @@ from __future__ import annotations
 
 # json is used to build stable cache keys for requests (endpoint + query params).
 import json
+# logging lets us surface rate-limit and retry behavior without spamming stdout.
+import logging
+# random adds small jitter to backoff so concurrent retries do not synchronize.
+import random
 # time provides epoch seconds for backoff sleeps (retry strategy).
 import time
 # dataclass gives lightweight, typed "data carriers" for queries without boilerplate.
@@ -49,6 +53,8 @@ from trafficpulse.ingestion.tdx_auth import TdxTokenProvider, load_tdx_credentia
 class TdxClientError(RuntimeError):
     """Raised when a TDX request fails after retries or returns an unexpected shape."""
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class ODataQuery:
@@ -58,6 +64,8 @@ class ODataQuery:
     endpoint: str
     # Query params follow OData conventions (e.g., $filter/$top/$skip/$format).
     params: dict[str, Any]
+    # Which TDX Basic API version this endpoint lives under ("v1" or "v2").
+    api: str = "v2"
 
     def cache_key(self) -> str:
         """Return a stable, deterministic cache key for this query.
@@ -68,7 +76,7 @@ class ODataQuery:
         """
 
         # `sort_keys=True` keeps the serialized form stable even if params were built in a different order.
-        return json.dumps({"endpoint": self.endpoint, "params": self.params}, sort_keys=True)
+        return json.dumps({"api": self.api, "endpoint": self.endpoint, "params": self.params}, sort_keys=True)
 
 
 def _isoformat_z(dt: datetime) -> str:
@@ -156,8 +164,20 @@ class TdxTrafficClient:
         self.config = (config or get_config()).resolve_paths()
 
         # The main data client targets the TDX "basic v2" base URL and returns JSON by default.
-        self._http = http_client or httpx.Client(
+        self._http_v2 = http_client or httpx.Client(
             base_url=self.config.tdx.base_url,
+            timeout=self.config.tdx.request_timeout_seconds,
+            headers={"accept": "application/json"},
+        )
+        # Some TDX endpoints are still served under basic v1 (e.g., RoadEvent).
+        self._http_v1 = httpx.Client(
+            base_url=self.config.tdx.base_url_v1,
+            timeout=self.config.tdx.request_timeout_seconds,
+            headers={"accept": "application/json"},
+        )
+        # Historical datasets are served under a separate base URL (often returning NDJSON).
+        self._http_historical = httpx.Client(
+            base_url=self.config.tdx.historical_base_url,
             timeout=self.config.tdx.request_timeout_seconds,
             headers={"accept": "application/json"},
         )
@@ -181,14 +201,86 @@ class TdxTrafficClient:
             ttl_seconds=self.config.cache.ttl_seconds,
             enabled=self.config.cache.enabled,
         )
+        # Track last request time so we can enforce a client-side minimum interval (optional throttle).
+        self._last_request_epoch_seconds: Optional[float] = None
 
     def close(self) -> None:
         """Close underlying HTTP clients to release sockets and file descriptors."""
 
-        # Closing the data client prevents connection pool leaks in long sessions/tests.
-        self._http.close()
+        # Closing the data clients prevents connection pool leaks in long sessions/tests.
+        self._http_v2.close()
+        self._http_v1.close()
+        self._http_historical.close()
         # Closing the auth client ensures token refresh requests also release resources.
         self._auth_http.close()
+
+    def _http_for_api(self, api: str) -> httpx.Client:
+        if api == "v1":
+            return self._http_v1
+        if api == "historical":
+            return self._http_historical
+        return self._http_v2
+
+    @staticmethod
+    def _parse_retry_after_seconds(value: Optional[str]) -> Optional[float]:
+        """Parse Retry-After header into seconds.
+
+        We support the most common form: an integer delay in seconds. If the server returns
+        an HTTP-date form, we ignore it for now (we could parse it later if needed).
+        """
+
+        if not value:
+            return None
+        text = value.strip()
+        try:
+            seconds = float(text)
+        except ValueError:
+            return None
+        if seconds < 0:
+            return None
+        return seconds
+
+    def _sleep_throttle(self) -> None:
+        """Enforce a minimum delay between requests to reduce 429 risk (optional)."""
+
+        min_interval = float(getattr(self.config.tdx, "min_request_interval_seconds", 0.0) or 0.0)
+        if min_interval <= 0:
+            return
+        now = time.time()
+        if self._last_request_epoch_seconds is None:
+            return
+        elapsed = now - self._last_request_epoch_seconds
+        remaining = min_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def _compute_backoff_seconds(self, attempt: int, retry_after_seconds: Optional[float]) -> float:
+        """Compute sleep time for a given retry attempt, honoring Retry-After when configured."""
+
+        base = float(self.config.tdx.retry_backoff_seconds)
+        multiplier = float(getattr(self.config.tdx, "backoff_multiplier", 2.0))
+        max_backoff = float(getattr(self.config.tdx, "max_backoff_seconds", 60.0))
+        jitter = float(getattr(self.config.tdx, "jitter_seconds", 0.0))
+
+        # Exponential backoff: base * multiplier^attempt (attempt starts at 0 for the first retry).
+        delay = base * (multiplier**attempt)
+        # Cap the maximum delay so single-request stalls are bounded.
+        delay = min(max_backoff, max(0.0, delay))
+        # Add a small jitter so many clients do not retry in lockstep.
+        if jitter > 0:
+            delay += random.uniform(0.0, jitter)
+
+        respect_retry_after = bool(getattr(self.config.tdx, "respect_retry_after", True))
+        if respect_retry_after and retry_after_seconds is not None:
+            delay = max(delay, retry_after_seconds)
+
+        return delay
+
+    @staticmethod
+    def _is_retryable_status(status_code: int) -> bool:
+        """Return True for HTTP status codes that are commonly safe to retry."""
+
+        return status_code in {408, 429, 500, 502, 503, 504}
 
     def _request_json(self, query: ODataQuery) -> list[dict[str, Any]]:
         """Execute a request and return a list of record dicts (with cache + retry support)."""
@@ -198,21 +290,26 @@ class TdxTrafficClient:
         if isinstance(cached, list):
             return cached
 
-        # Obtain a valid bearer token; the provider refreshes automatically when needed.
-        token = self._token_provider.get_access_token()
-        # Build the Authorization header for the TDX API requests.
-        headers = {"authorization": f"Bearer {token}"}
-
         # Retry behavior is config-driven so users can tune it for their environment and dataset size.
         max_retries = max(0, int(self.config.tdx.max_retries))
-        backoff_seconds = float(self.config.tdx.retry_backoff_seconds)
 
         # Track the last exception so we can surface a useful error after all retries are exhausted.
         last_error: Optional[Exception] = None
         for attempt in range(max_retries + 1):
             try:
+                # Optional client-side throttle to reduce the likelihood of upstream 429s.
+                self._sleep_throttle()
+
+                # Obtain a valid bearer token; the provider refreshes automatically when needed.
+                token = self._token_provider.get_access_token()
+                # Build the Authorization header for the TDX API requests.
+                headers = {"authorization": f"Bearer {token}"}
+
+                http_client = self._http_for_api(query.api)
                 # Execute the GET with OData params; endpoint is relative to `base_url`.
-                response = self._http.get(query.endpoint, params=query.params, headers=headers)
+                response = http_client.get(query.endpoint, params=query.params, headers=headers)
+                # Record request time only when we actually hit the network (not when served from cache).
+                self._last_request_epoch_seconds = time.time()
                 # Convert non-2xx responses into exceptions early so we can retry consistently.
                 response.raise_for_status()
                 # Parse JSON payload; if it's not JSON, this will raise (useful failure signal).
@@ -222,21 +319,130 @@ class TdxTrafficClient:
                 # Persist successful results so repeated local runs do not re-hit the API.
                 self._cache.set_json("tdx", query.cache_key(), items)
                 return items
-            except Exception as exc:  # noqa: BLE001 - we want to retry on any transient network/parse failure
-                # Store the last error to report if we run out of retries.
+            except httpx.HTTPStatusError as exc:
+                # Decide whether this status should be retried, and optionally honor Retry-After.
                 last_error = exc
-                # Break immediately when we have no retries left.
+                status = int(exc.response.status_code)
+
+                # If we get a 401, the token may have expired earlier than expected; force a refresh once.
+                if status == 401 and attempt < max_retries:
+                    logger.warning("TDX request unauthorized (401); invalidating cached token and retrying.")
+                    self._token_provider.invalidate()
+                    delay = self._compute_backoff_seconds(attempt=attempt, retry_after_seconds=None)
+                    time.sleep(delay)
+                    continue
+
+                if not self._is_retryable_status(status) or attempt >= max_retries:
+                    break
+
+                retry_after_seconds = self._parse_retry_after_seconds(
+                    exc.response.headers.get("retry-after")
+                )
+                delay = self._compute_backoff_seconds(
+                    attempt=attempt, retry_after_seconds=retry_after_seconds
+                )
+                logger.warning(
+                    "TDX request failed (%s). Retrying in %.2fs (attempt %s/%s).",
+                    status,
+                    delay,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(delay)
+            except Exception as exc:  # noqa: BLE001 - retry transient network/parse failures
+                last_error = exc
                 if attempt >= max_retries:
                     break
-                # Exponential backoff reduces pressure on the upstream service and avoids thundering herds.
-                time.sleep(backoff_seconds * (2**attempt))
+                delay = self._compute_backoff_seconds(attempt=attempt, retry_after_seconds=None)
+                logger.warning(
+                    "TDX request error (%s). Retrying in %.2fs (attempt %s/%s).",
+                    type(exc).__name__,
+                    delay,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(delay)
 
         # Surface a single, explicit error that includes the root cause (last_error) for debugging.
         raise TdxClientError(f"TDX request failed after retries: {last_error}") from last_error
 
+    def _request_ndjson(self, query: ODataQuery) -> list[dict[str, Any]]:
+        """Execute a request that returns NDJSON (JSONL), returning a list of dict records."""
+
+        cached = self._cache.get_json("tdx", query.cache_key())
+        if isinstance(cached, list):
+            return cached
+
+        max_retries = max(0, int(self.config.tdx.max_retries))
+        last_error: Optional[Exception] = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                self._sleep_throttle()
+
+                token = self._token_provider.get_access_token()
+                headers = {"authorization": f"Bearer {token}"}
+                http_client = self._http_for_api(query.api)
+
+                response = http_client.get(query.endpoint, params=query.params, headers=headers)
+                self._last_request_epoch_seconds = time.time()
+                response.raise_for_status()
+                items: list[dict[str, Any]] = []
+                for line in response.text.splitlines():
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, dict):
+                        items.append(parsed)
+                self._cache.set_json("tdx", query.cache_key(), items)
+                return items
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status = int(exc.response.status_code)
+
+                if status == 401 and attempt < max_retries:
+                    logger.warning("TDX request unauthorized (401); invalidating cached token and retrying.")
+                    self._token_provider.invalidate()
+                    time.sleep(self._compute_backoff_seconds(attempt=attempt, retry_after_seconds=None))
+                    continue
+
+                if not self._is_retryable_status(status) or attempt >= max_retries:
+                    break
+
+                retry_after_seconds = self._parse_retry_after_seconds(
+                    exc.response.headers.get("retry-after")
+                )
+                delay = self._compute_backoff_seconds(
+                    attempt=attempt, retry_after_seconds=retry_after_seconds
+                )
+                logger.warning(
+                    "TDX request failed (%s). Retrying in %.2fs (attempt %s/%s).",
+                    status,
+                    delay,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(delay)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt >= max_retries:
+                    break
+                delay = self._compute_backoff_seconds(attempt=attempt, retry_after_seconds=None)
+                logger.warning(
+                    "TDX request error (%s). Retrying in %.2fs (attempt %s/%s).",
+                    type(exc).__name__,
+                    delay,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(delay)
+
+        raise TdxClientError(f"TDX request failed after retries: {last_error}") from last_error
+
     @staticmethod
     def _extract_items(payload: Any) -> list[dict[str, Any]]:
-        """Extract records from either a raw list payload or an OData `{value: [...]}` payload."""
+        """Extract record dicts from common TDX payload shapes."""
 
         # Some endpoints return a bare JSON array; keep only dict items for schema consistency.
         if isinstance(payload, list):
@@ -244,6 +450,22 @@ class TdxTrafficClient:
         # Other endpoints return an OData wrapper object; the records live under `value`.
         if isinstance(payload, dict) and isinstance(payload.get("value"), list):
             return [item for item in payload["value"] if isinstance(item, dict)]
+        # Many TDX traffic endpoints return a wrapper with a dataset-specific list field.
+        if isinstance(payload, dict):
+            for key in ("VDLives", "VDs", "LiveEvents", "Events"):
+                if isinstance(payload.get(key), list):
+                    items = [item for item in payload[key] if isinstance(item, dict)]
+                    # Preserve wrapper timestamps for snapshot-like endpoints (so downstream code can
+                    # choose between DataCollectTime vs SrcUpdateTime consistently).
+                    wrapper_update_time = payload.get("UpdateTime")
+                    wrapper_src_update_time = payload.get("SrcUpdateTime")
+                    if wrapper_update_time is not None or wrapper_src_update_time is not None:
+                        for item in items:
+                            if wrapper_update_time is not None and "__tdx_update_time" not in item:
+                                item["__tdx_update_time"] = wrapper_update_time
+                            if wrapper_src_update_time is not None and "__tdx_src_update_time" not in item:
+                                item["__tdx_src_update_time"] = wrapper_src_update_time
+                    return items
         # If neither shape matches, the API may have changed or returned an error object unexpectedly.
         raise TdxClientError("Unexpected TDX response shape; expected a list or an OData {value:[...]} object.")
 
@@ -291,72 +513,168 @@ class TdxTrafficClient:
         end: datetime,
         cities: Optional[list[str]] = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Download VD records and return `(segments_df, observations_df)` as normalized DataFrames."""
+        """Download VD records (historical by default) and return `(segments_df, observations_df)`."""
 
-        # VD ingestion settings define which endpoints/fields we use for this dataset.
+        return self.download_vd_historical(start=start, end=end, cities=cities)
+
+    def download_vd_live(
+        self,
+        start: datetime,
+        end: datetime,
+        cities: Optional[list[str]] = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Download VDLive observations for a time window, plus VD metadata for mapping."""
+
         config = self.config.ingestion.vd
-        # Allow a caller-provided city list (e.g., scripts) while keeping config defaults.
         selected_cities = cities or config.cities
 
-        # Accumulate rows as dicts first; this is flexible when raw payload schemas are inconsistent.
-        segment_rows: list[dict[str, Any]] = []
+        segments_rows: list[dict[str, Any]] = []
         observation_rows: list[dict[str, Any]] = []
 
-        # Fetch and normalize per city so endpoint failures or schema differences are easier to isolate.
         for city in selected_cities:
-            # Fetch raw JSON dicts using chunking/pagination under the hood.
-            raw = self._fetch_vd_city_raw(city=city, start=start, end=end)
-            # Convert raw dicts into standardized segment/observation DataFrames.
-            segments_df, observations_df = self._normalize_vd_records(raw, city=city)
-            # Convert DataFrames back to dict records so we can concatenate across cities cheaply.
-            if not segments_df.empty:
-                segment_rows.extend(segments_df.to_dict(orient="records"))
-            if not observations_df.empty:
-                observation_rows.extend(observations_df.to_dict(orient="records"))
+            metadata_raw = self._fetch_vd_metadata_city_raw(city=city)
+            segments_rows.extend(self._normalize_vd_metadata_records(metadata_raw, city=city))
 
-        # Build the final segments DataFrame from accumulated rows.
-        segments = pd.DataFrame(segment_rows)
-        if not segments.empty:
-
-            # When the same segment appears multiple times, keep the first non-null value per column.
-            def first_non_null(series: pd.Series) -> Any:
-                # Drop NaNs so we do not choose missing values when a real value exists.
-                non_null = series.dropna()
-                # If the entire series is null, return None to keep the field explicitly missing.
-                return non_null.iloc[0] if not non_null.empty else None
-
-            # Deduplicate segments across time/cities using a stable key (`segment_id`).
-            segments = segments.groupby("segment_id", as_index=False).agg(first_non_null)
-            # Sort for deterministic outputs (helps reproducibility and diff-friendly exports).
-            segments = segments.sort_values("segment_id")
-
-        # Build the final observations DataFrame from accumulated rows.
-        observations = pd.DataFrame(observation_rows)
-        if not observations.empty:
-
-            # Parse timestamps robustly; bad formats should become NaT instead of crashing the run.
-            def normalize_timestamp(value: Any) -> Any:
-                # Treat missing timestamps as NaT (pandas' missing datetime value).
-                if value is None:
-                    return pd.NaT
-                try:
-                    # Convert to UTC so all downstream grouping/aggregation happens in one timezone.
-                    return to_utc(parse_datetime(str(value)))
-                except Exception:
-                    # Any parsing error results in NaT so we can drop invalid rows later.
-                    return pd.NaT
-
-            # Apply parsing on the raw timestamp field.
-            observations["timestamp"] = observations["timestamp"].map(normalize_timestamp)
-            # Ensure pandas recognizes the column as timezone-aware UTC datetimes.
-            observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
-            # Drop rows missing the minimum keys and sort for stable downstream processing.
-            observations = observations.dropna(subset=["timestamp", "segment_id"]).sort_values(
-                ["segment_id", "timestamp"]
+            # Live endpoints can be inconsistent about server-side time filtering, so we fetch a
+            # snapshot and filter client-side by DataCollectTime.
+            obs_raw = self._fetch_vd_city_live_raw(city=city)
+            observation_rows.extend(
+                self._normalize_vd_observation_records(
+                    obs_raw, start=start, end=end, timestamp_mode="snapshot"
+                )
             )
 
-        # Return the two canonical tables used by preprocessing and analytics.
+        segments = self._finalize_segments(pd.DataFrame(segments_rows))
+        observations = self._finalize_observations(pd.DataFrame(observation_rows))
         return segments, observations
+
+    def download_vd_metadata(self, cities: Optional[list[str]] = None) -> pd.DataFrame:
+        """Download static VD metadata (detector definitions) for one or more cities."""
+
+        config = self.config.ingestion.vd
+        selected_cities = cities or config.cities
+
+        segments_rows: list[dict[str, Any]] = []
+        for city in selected_cities:
+            metadata_raw = self._fetch_vd_metadata_city_raw(city=city)
+            segments_rows.extend(self._normalize_vd_metadata_records(metadata_raw, city=city))
+
+        return self._finalize_segments(pd.DataFrame(segments_rows))
+
+    def download_vd_live_snapshot(self, cities: Optional[list[str]] = None) -> pd.DataFrame:
+        """Download a single VDLive snapshot for one or more cities as observations rows."""
+
+        config = self.config.ingestion.vd
+        selected_cities = cities or config.cities
+
+        observation_rows: list[dict[str, Any]] = []
+        for city in selected_cities:
+            obs_raw = self._fetch_vd_city_live_raw(city=city)
+            observation_rows.extend(
+                self._normalize_vd_observation_records(obs_raw, timestamp_mode="snapshot")
+            )
+
+        return self._finalize_observations(pd.DataFrame(observation_rows))
+
+    def download_vd_historical(
+        self,
+        start: datetime,
+        end: datetime,
+        cities: Optional[list[str]] = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Download historical VDLive observations (JSONL by date range), plus VD metadata."""
+
+        config = self.config.ingestion.vd
+        selected_cities = cities or config.cities
+
+        segments_rows: list[dict[str, Any]] = []
+        observation_rows: list[dict[str, Any]] = []
+
+        for city in selected_cities:
+            metadata_raw = self._fetch_vd_metadata_city_raw(city=city)
+            segments_rows.extend(self._normalize_vd_metadata_records(metadata_raw, city=city))
+
+            obs_raw = self._fetch_vd_city_historical_raw(city=city, start=start, end=end)
+            observation_rows.extend(self._normalize_vd_observation_records(obs_raw))
+
+        segments = self._finalize_segments(pd.DataFrame(segments_rows))
+        observations = self._finalize_observations(pd.DataFrame(observation_rows))
+        return segments, observations
+
+    @staticmethod
+    def _finalize_segments(segments: pd.DataFrame) -> pd.DataFrame:
+        if segments.empty:
+            return segments
+
+        def first_non_null(series: pd.Series) -> Any:
+            non_null = series.dropna()
+            return non_null.iloc[0] if not non_null.empty else None
+
+        segments = segments.groupby("segment_id", as_index=False).agg(first_non_null)
+        return segments.sort_values("segment_id").reset_index(drop=True)
+
+    @staticmethod
+    def _finalize_observations(observations: pd.DataFrame) -> pd.DataFrame:
+        if observations.empty:
+            return observations
+        observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
+        observations = observations.dropna(subset=["timestamp", "segment_id"]).sort_values(
+            ["segment_id", "timestamp"]
+        )
+        return observations.reset_index(drop=True)
+
+    def _normalize_vd_metadata_records(self, records: list[dict[str, Any]], city: str) -> list[dict[str, Any]]:
+        config = self.config.ingestion.vd
+        rows: list[dict[str, Any]] = []
+        for record in records:
+            segment_id = record.get(config.segment_id_field)
+            if segment_id is None:
+                continue
+            rows.append(self._extract_vd_segment_metadata(record, city=city, segment_id=str(segment_id)))
+        return rows
+
+    def _normalize_vd_observation_records(
+        self,
+        records: list[dict[str, Any]],
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        timestamp_mode: str = "collect",
+    ) -> list[dict[str, Any]]:
+        config = self.config.ingestion.vd
+        rows: list[dict[str, Any]] = []
+        start_utc = to_utc(start) if start is not None else None
+        end_utc = to_utc(end) if end is not None else None
+        for record in records:
+            segment_id = record.get(config.segment_id_field)
+            if segment_id is None:
+                continue
+            if timestamp_mode == "snapshot":
+                timestamp = record.get("SrcUpdateTime") or record.get("__tdx_src_update_time") or record.get(
+                    "UpdateTime"
+                ) or record.get("__tdx_update_time")
+            else:
+                timestamp = record.get(config.time_field)
+            if timestamp is None:
+                continue
+            if start_utc is not None or end_utc is not None:
+                dt = _coerce_datetime_utc(timestamp)
+                if dt is None:
+                    continue
+                if start_utc is not None and dt < start_utc:
+                    continue
+                if end_utc is not None and dt >= end_utc:
+                    continue
+            speed_kph, volume, occupancy = self._extract_vd_observation_values(record)
+            rows.append(
+                {
+                    "timestamp": timestamp,
+                    "segment_id": str(segment_id),
+                    "speed_kph": speed_kph,
+                    "volume": volume,
+                    "occupancy_pct": occupancy,
+                }
+            )
+        return rows
 
     def download_events(
         self,
@@ -405,6 +723,122 @@ class TdxTrafficClient:
         events = events.sort_values(["start_time", "event_id"]).reset_index(drop=True)
         return events
 
+    def _fetch_vd_metadata_city_raw(self, city: str) -> list[dict[str, Any]]:
+        """Fetch VD metadata (static detector definitions) for a single city."""
+
+        config = self.config.ingestion.vd
+        page_size = int(config.paging.page_size)
+        if page_size <= 0:
+            raise ValueError("ingestion.vd.paging.page_size must be > 0")
+
+        base_params: dict[str, Any] = {"$format": "JSON", "$top": page_size}
+        endpoint = f"Road/Traffic/VD/City/{city}"
+        return self._fetch_paginated(endpoint=endpoint, base_params=base_params, page_size=page_size, api="v2")
+
+    def _fetch_vd_city_live_raw(self, city: str) -> list[dict[str, Any]]:
+        """Fetch a VDLive snapshot for a city (server-side time filtering is not relied upon)."""
+
+        config = self.config.ingestion.vd
+        page_size = int(config.paging.page_size)
+        if page_size <= 0:
+            raise ValueError("ingestion.vd.paging.page_size must be > 0")
+
+        base_params: dict[str, Any] = {"$format": "JSON", "$top": page_size}
+        last_error: Optional[Exception] = None
+        for template in config.endpoint_templates:
+            endpoint = template.format(city=city)
+            try:
+                return self._fetch_paginated(
+                    endpoint=endpoint, base_params=base_params, page_size=page_size, api="v2"
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+        raise TdxClientError(f"All VD endpoint templates failed for city={city}: {last_error}") from last_error
+
+    def _fetch_vd_city_historical_raw(self, city: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """Fetch VDLive observations from the historical JSONL endpoint (max 7 days per request)."""
+
+        config = self.config.ingestion.vd
+        tz = self._local_timezone()
+        start_local = start.astimezone(tz)
+        end_local = end.astimezone(tz)
+
+        # Historical service only supports dates up to yesterday. If the requested window includes
+        # "today" (local time), we fetch the tail from the live endpoint instead.
+        today = datetime.now(tz).date()
+        today_start = datetime(today.year, today.month, today.day, tzinfo=tz)
+        historical_end_local = min(end_local, today_start)
+        live_start_local = max(start_local, today_start)
+
+        # Build an inclusive list of dates to query.
+        start_date = start_local.date()
+        end_date = (
+            (historical_end_local - timedelta(seconds=1)).date()
+            if historical_end_local.time() == datetime.min.time()
+            else historical_end_local.date()
+        )
+        if end_date < start_date:
+            # No historical portion; fall back to live if needed.
+            return (
+                self._fetch_vd_city_raw(city=city, start=live_start_local, end=end_local)
+                if live_start_local < end_local
+                else []
+            )
+
+        dates: list[str] = []
+        current = start_date
+        while current <= end_date:
+            dates.append(current.strftime("%Y-%m-%d"))
+            current = current + timedelta(days=1)
+
+        results: list[dict[str, Any]] = []
+        for i in range(0, len(dates), 7):
+            batch = dates[i : i + 7]
+            if not batch:
+                continue
+            dates_param = batch[0] if len(batch) == 1 else f"{batch[0]}~{batch[-1]}"
+
+            last_error: Optional[Exception] = None
+            for template in config.historical_endpoint_templates:
+                endpoint = template.format(city=city)
+                params: dict[str, Any] = {"Dates": dates_param, "$format": "JSONL"}
+                try:
+                    results.extend(
+                        self._request_ndjson(ODataQuery(api="historical", endpoint=endpoint, params=params))
+                    )
+                    last_error = None
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+            if last_error is not None:
+                raise TdxClientError(
+                    f"All VD historical endpoint templates failed for city={city}: {last_error}"
+                ) from last_error
+
+        # Filter to the requested time window using the configured time field.
+        filtered: list[dict[str, Any]] = []
+        start_utc = to_utc(start)
+        end_utc = to_utc(end)
+        for item in results:
+            dt = _coerce_datetime_utc(item.get(config.time_field))
+            if dt is None:
+                continue
+            if start_utc <= dt < end_utc:
+                filtered.append(item)
+
+        if live_start_local < end_local:
+            filtered.extend(self._fetch_vd_city_raw(city=city, start=live_start_local, end=end_local))
+
+        return filtered
+
+    def _local_timezone(self):
+        from zoneinfo import ZoneInfo
+
+        try:
+            return ZoneInfo(self.config.app.timezone)
+        except Exception:  # pragma: no cover
+            return ZoneInfo("Asia/Taipei")
+
     def _fetch_vd_city_raw(self, city: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
         """Fetch raw VD records for a single city, chunking long windows into smaller requests."""
 
@@ -452,7 +886,9 @@ class TdxTrafficClient:
             endpoint = template.format(city=city)
             try:
                 # Fetch all pages for the chosen endpoint and return immediately on success.
-                return self._fetch_paginated(endpoint=endpoint, base_params=base_params, page_size=page_size)
+                return self._fetch_paginated(
+                    endpoint=endpoint, base_params=base_params, page_size=page_size, api="v2"
+                )
             except Exception as exc:  # noqa: BLE001 - endpoint availability can vary by city/dataset
                 # Store the error so we can report it if all templates fail.
                 last_error = exc
@@ -508,7 +944,9 @@ class TdxTrafficClient:
             endpoint = template.format(city=city)
             try:
                 # Fetch all pages for this endpoint and return on the first success.
-                return self._fetch_paginated(endpoint=endpoint, base_params=base_params, page_size=page_size)
+                return self._fetch_paginated(
+                    endpoint=endpoint, base_params=base_params, page_size=page_size, api="v1"
+                )
             except Exception as exc:  # noqa: BLE001 - endpoint availability can vary across feeds
                 # Store the last error and try the next endpoint template.
                 last_error = exc
@@ -520,7 +958,7 @@ class TdxTrafficClient:
         ) from last_error
 
     def _fetch_paginated(
-        self, endpoint: str, base_params: dict[str, Any], page_size: int
+        self, endpoint: str, base_params: dict[str, Any], page_size: int, api: str = "v2"
     ) -> list[dict[str, Any]]:
         """Fetch all pages for an endpoint using OData `$top`/`$skip` pagination."""
 
@@ -534,7 +972,7 @@ class TdxTrafficClient:
             # Add paging offset; this is the only param that changes between pages.
             params["$skip"] = skip
             # Execute the request with caching and retry support.
-            page = self._request_json(ODataQuery(endpoint=endpoint, params=params))
+            page = self._request_json(ODataQuery(api=api, endpoint=endpoint, params=params))
             # Append page records to the full result set.
             items.extend(page)
             # When we receive a short page, we have reached the end.
@@ -567,6 +1005,19 @@ class TdxTrafficClient:
             end_time = _coerce_datetime_utc(_get_by_path(record, config.end_time_field))
 
             # Map raw fields into our internal schema, coercing types where needed.
+            lat = _coerce_float(_get_by_path(record, config.lat_field)) if config.lat_field else None
+            lon = _coerce_float(_get_by_path(record, config.lon_field)) if config.lon_field else None
+            if lat is None and lon is None:
+                positions = record.get("Positions")
+                if isinstance(positions, str):
+                    text = positions.strip()
+                    if text.upper().startswith("POINT(") and text.endswith(")"):
+                        inner = text[text.find("(") + 1 : -1].strip()
+                        parts = inner.split()
+                        if len(parts) == 2:
+                            lon = _coerce_float(parts[0])
+                            lat = _coerce_float(parts[1])
+
             rows.append(
                 {
                     "event_id": str(event_id),
@@ -577,8 +1028,8 @@ class TdxTrafficClient:
                     "road_name": _get_by_path(record, config.road_name_field),
                     "direction": _get_by_path(record, config.direction_field),
                     "severity": _coerce_float(_get_by_path(record, config.severity_field)),
-                    "lat": _coerce_float(_get_by_path(record, config.lat_field)),
-                    "lon": _coerce_float(_get_by_path(record, config.lon_field)),
+                    "lat": lat,
+                    "lon": lon,
                     "city": city,
                     # Track provenance so we can mix sources later without ambiguity.
                     "source": "tdx",
@@ -664,6 +1115,19 @@ class TdxTrafficClient:
         lane_list = record.get(config.lane_list_field)
         if isinstance(lane_list, list) and lane_list:
             return self._aggregate_lanes(lane_list)
+
+        # Road/Traffic VDLive nests lanes under LinkFlows[].Lanes[].
+        link_flows = record.get("LinkFlows")
+        if isinstance(link_flows, list) and link_flows:
+            lanes: list[dict[str, Any]] = []
+            for flow in link_flows:
+                if not isinstance(flow, dict):
+                    continue
+                flow_lanes = flow.get("Lanes")
+                if isinstance(flow_lanes, list):
+                    lanes.extend([lane for lane in flow_lanes if isinstance(lane, dict)])
+            if lanes:
+                return self._aggregate_lanes(lanes)
 
         # Otherwise fall back to top-level fields, coercing types defensively.
         speed = _coerce_float(record.get(config.lane_speed_field))

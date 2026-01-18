@@ -47,6 +47,34 @@ def save_csv(df: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+def append_csv(df: pd.DataFrame, path: Path) -> Path:
+    """Append a DataFrame to a CSV, creating the file if it does not exist.
+
+    Notes:
+    - When appending to an existing file, this function aligns columns to the existing header:
+      extra columns are dropped and missing columns are filled with NA.
+    - This is intentionally simple and optimized for ingestion backfills; downstream code can
+      re-sort/deduplicate if needed.
+    """
+
+    ensure_parent_dir(path)
+    if df.empty:
+        return path
+
+    if not path.exists():
+        df.to_csv(path, index=False)
+        return path
+
+    existing_cols = list(pd.read_csv(path, nrows=0).columns)
+    aligned = df.copy()
+    for col in existing_cols:
+        if col not in aligned.columns:
+            aligned[col] = pd.NA
+    aligned = aligned[existing_cols]
+    aligned.to_csv(path, mode="a", header=False, index=False)
+    return path
+
+
 def load_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 

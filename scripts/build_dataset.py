@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import _bootstrap  # noqa: F401
+
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +24,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a local VD dataset from TDX.")
     parser.add_argument("--start", required=True, help="Start datetime (ISO 8601).")
     parser.add_argument("--end", required=True, help="End datetime (ISO 8601).")
+    parser.add_argument(
+        "--source",
+        choices=["historical", "live"],
+        default="historical",
+        help="Data source: 'historical' uses JSONL-by-date backfill; 'live' uses live VDLive endpoint.",
+    )
     parser.add_argument(
         "--cities",
         nargs="*",
@@ -60,7 +68,10 @@ def main() -> None:
 
     client = TdxTrafficClient(config=config)
     try:
-        segments, observations = client.download_vd(start=start, end=end, cities=args.cities)
+        if args.source == "live":
+            segments, observations = client.download_vd_live(start=start, end=end, cities=args.cities)
+        else:
+            segments, observations = client.download_vd_historical(start=start, end=end, cities=args.cities)
     finally:
         client.close()
 

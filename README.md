@@ -62,6 +62,38 @@ pip install -e .
 python scripts/build_dataset.py --start 2026-01-01T00:00:00+08:00 --end 2026-01-01T03:00:00+08:00 --cities Taipei
 ```
 
+## Slow Backfill (Rate-Limit Friendly)
+
+For large windows, use the resumable backfill script with a client-side throttle and checkpointing:
+
+```bash
+python scripts/ingest_backfill.py \
+  --dataset vd \
+  --start 2026-01-01T00:00:00+08:00 \
+  --end 2026-01-01T06:00:00+08:00 \
+  --chunk-minutes 60 \
+  --min-request-interval 0.2
+```
+
+- Outputs: `data/processed/segments.csv` and `data/processed/observations_5min.csv`
+- Checkpoint: `data/cache/backfill_checkpoint.json` (resume by re-running the command)
+- Tune retry/backoff/throttle under `tdx:` in `configs/config.yaml` (see `configs/config.example.yaml`)
+
+## Live Snapshot Loop (Rate-Limit Friendly)
+
+VDLive is served as a **snapshot** feed. Use the live loop script to poll it periodically and append only new snapshots:
+
+```bash
+python scripts/ingest_live_loop.py --interval-seconds 60 --min-request-interval 1.0 --no-cache
+```
+
+- Appends snapshots to `data/processed/observations_5min.csv` (deduped by snapshot timestamp)
+- Writes state to `data/cache/live_loop_state.json`
+
+## Scheduling (systemd/cron)
+
+See `docs/06_ingestion_scheduling.md`.
+
 ## Build Traffic Events (Phase 3)
 
 Traffic events/incident feeds are configurable under `ingestion.events` in `configs/config.yaml`.

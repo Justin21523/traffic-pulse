@@ -127,6 +127,11 @@ class TdxTokenProvider:
         # At this point `_token` must exist, so we can return the bearer string.
         return self._token.access_token
 
+    def invalidate(self) -> None:
+        """Forget the cached token so the next call forces a refresh."""
+
+        self._token = None
+
     def _refresh_token(self) -> OAuthToken:
         """Request a new token from TDX using the client credentials flow."""
 

@@ -1,6 +1,6 @@
 .env
 .venv/
-__pycache__/
+**/__pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
@@ -20,3 +20,11 @@ data/*
 outputs/*
 !outputs/**/
 !outputs/**/.gitkeep
+.aider*
+
+# Editor / local tooling
+.vscode/
+
+# Node artifacts (UI is served as static files; no npm workflow in-repo yet)
+package.json
+package-lock.json

@@ -42,20 +42,31 @@ class CacheSection(BaseModel):
 
 
 class TdxSection(BaseModel):
+    # Most TrafficPulse datasets use TDX Basic v2.
     base_url: str = "https://tdx.transportdata.tw/api/basic/v2"
+    # Some endpoints (e.g., RoadEvent) are still served under TDX Basic v1.
+    base_url_v1: str = "https://tdx.transportdata.tw/api/basic/v1"
+    # Historical datasets are served by a separate base URL.
+    historical_base_url: str = "https://tdx.transportdata.tw/api/historical"
     token_url: str = (
         "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
     )
     request_timeout_seconds: int = 30
     max_retries: int = 3
     retry_backoff_seconds: float = 1.0
+    backoff_multiplier: float = 2.0
+    max_backoff_seconds: float = 60.0
+    jitter_seconds: float = 0.25
+    respect_retry_after: bool = True
+    min_request_interval_seconds: float = 0.0
 
 
 class VdMetadataFields(BaseModel):
-    name_field: str = "VDName"
+    # Note: V2 Road/Traffic VD metadata uses RoadName/RoadSection and may not have VDName/Direction.
+    name_field: str = "RoadSection"
     direction_field: str = "Direction"
     road_name_field: str = "RoadName"
-    link_id_field: str = "LinkID"
+    link_id_field: str = "RoadID"
     lat_field: str = "PositionLat"
     lon_field: str = "PositionLon"
 
@@ -67,8 +78,12 @@ class VdPagingSection(BaseModel):
 class VdIngestionSection(BaseModel):
     endpoint_templates: list[str] = Field(
         default_factory=lambda: [
-            "Traffic/VD/History/City/{city}",
-            "Traffic/VD/Live/City/{city}",
+            "Road/Traffic/Live/VD/City/{city}",
+        ]
+    )
+    historical_endpoint_templates: list[str] = Field(
+        default_factory=lambda: [
+            "v2/Historical/Road/Traffic/Live/VD/City/{city}",
         ]
     )
     cities: list[str] = Field(default_factory=lambda: ["Taipei"])
@@ -76,6 +91,7 @@ class VdIngestionSection(BaseModel):
     time_field: str = "DataCollectTime"
     segment_id_field: str = "VDID"
 
+    # For Road/Traffic VDLive, lanes are nested under LinkFlows[].Lanes[].
     lane_list_field: str = "VDLives"
     lane_speed_field: str = "Speed"
     lane_volume_field: str = "Volume"
@@ -96,22 +112,26 @@ class EventsPagingSection(BaseModel):
 class EventsIngestionSection(BaseModel):
     endpoint_templates: list[str] = Field(
         default_factory=lambda: [
-            "Traffic/TrafficEvent/History/City/{city}",
-            "Traffic/TrafficEvent/Live/City/{city}",
+            "Traffic/RoadEvent/LiveEvent/City/{city}",
+        ]
+    )
+    historical_endpoint_templates: list[str] = Field(
+        default_factory=lambda: [
+            "Traffic/RoadEvent/Event/City/{city}",
         ]
     )
     cities: list[str] = Field(default_factory=lambda: ["Taipei"])
 
-    start_time_field: str = "StartTime"
-    end_time_field: str = "EndTime"
-    id_field: str = "TrafficEventID"
+    start_time_field: str = "EffectiveTime"
+    end_time_field: str = "ExpireTime"
+    id_field: str = "EventID"
     type_field: str = "EventType"
     description_field: str = "Description"
-    road_name_field: str = "RoadName"
+    road_name_field: str = "Location"
     direction_field: str = "Direction"
     severity_field: str = "Severity"
-    lat_field: str = "PositionLat"
-    lon_field: str = "PositionLon"
+    lat_field: str = ""
+    lon_field: str = ""
 
     paging: EventsPagingSection = Field(default_factory=EventsPagingSection)
 

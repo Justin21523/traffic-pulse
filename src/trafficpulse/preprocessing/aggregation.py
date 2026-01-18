@@ -13,8 +13,8 @@ from __future__ import annotations
 
 # dataclass provides a simple, typed container for aggregation settings without boilerplate.
 from dataclasses import dataclass
-# Any/Optional are used for flexible typing when working with pandas and nullable values.
-from typing import Any, Optional
+# Optional is used for flexible typing when some inputs can be absent.
+from typing import Optional
 
 # pandas provides datetime bucketing (`dt.floor`) and groupby aggregations for tabular time series.
 import pandas as pd

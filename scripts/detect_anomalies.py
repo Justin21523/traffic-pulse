@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import _bootstrap  # noqa: F401
+
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from trafficpulse.analytics.anomalies import (
     anomaly_spec_from_config,
