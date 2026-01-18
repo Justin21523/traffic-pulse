@@ -1841,12 +1841,49 @@ function selectSegment(segmentId, { centerMap } = { centerMap: true }) {
   }
 }
 
-function selectCorridor(corridorId) {
+function centerMapOnCorridor(corridorId) {
+  const corridor = corridorsById.get(corridorId);
+  const minLat = corridor?.min_lat;
+  const minLon = corridor?.min_lon;
+  const maxLat = corridor?.max_lat;
+  const maxLon = corridor?.max_lon;
+  if (
+    minLat == null ||
+    minLon == null ||
+    maxLat == null ||
+    maxLon == null ||
+    !Number.isFinite(Number(minLat)) ||
+    !Number.isFinite(Number(minLon)) ||
+    !Number.isFinite(Number(maxLat)) ||
+    !Number.isFinite(Number(maxLon))
+  ) {
+    const centerLat = corridor?.center_lat;
+    const centerLon = corridor?.center_lon;
+    if (
+      centerLat != null &&
+      centerLon != null &&
+      Number.isFinite(Number(centerLat)) &&
+      Number.isFinite(Number(centerLon))
+    ) {
+      map.setView([Number(centerLat), Number(centerLon)], Math.max(map.getZoom(), 12), { animate: true });
+    }
+    return;
+  }
+
+  const bounds = L.latLngBounds([Number(minLat), Number(minLon)], [Number(maxLat), Number(maxLon)]);
+  map.fitBounds(bounds.pad(0.08), { animate: true });
+}
+
+function selectCorridor(corridorId, { centerMap } = { centerMap: false }) {
   entityTypeEl.value = "corridor";
   selectedCorridorId = corridorId;
   const corridor = corridorsById.get(corridorId);
   updateCorridorInfo(corridor);
   corridorSelectEl.value = corridorId;
+  if (centerMap) {
+    centerMapOnCorridor(corridorId);
+    setStatus(`Centered on corridor ${corridorId}.`);
+  }
 }
 
 function selectEvent(eventId, { centerMap } = { centerMap: true }) {
@@ -2044,7 +2081,7 @@ function renderRankings(items, type) {
       el.addEventListener("click", () => {
         Array.from(rankingsEl.querySelectorAll(".ranking-row")).forEach((n) => n.classList.remove("selected"));
         el.classList.add("selected");
-        selectCorridor(row.corridor_id);
+        selectCorridor(row.corridor_id, { centerMap: true });
         loadTimeseries();
       });
     } else {

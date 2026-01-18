@@ -31,6 +31,32 @@ class CorridorMetadata(BaseModel):
     corridor_id: str
     corridor_name: Optional[str] = None
     segment_count: int
+    # Optional geometry hints for UI map navigation (additive / backward compatible).
+    min_lat: Optional[float] = None
+    min_lon: Optional[float] = None
+    max_lat: Optional[float] = None
+    max_lon: Optional[float] = None
+    center_lat: Optional[float] = None
+    center_lon: Optional[float] = None
+
+
+def _load_segments_for_corridors() -> pd.DataFrame:
+    config = get_config()
+    backend = duckdb_backend(config)
+    if backend is not None:
+        return backend.query_segments(columns=["segment_id", "lat", "lon"])
+
+    from trafficpulse.storage.datasets import segments_csv_path, segments_parquet_path
+
+    parquet_dir = config.warehouse.parquet_dir
+    processed_dir = config.paths.processed_dir
+    parquet_path = segments_parquet_path(parquet_dir)
+    csv_path = segments_csv_path(processed_dir)
+    if config.warehouse.enabled and parquet_path.exists():
+        return load_parquet(parquet_path)
+    if not csv_path.exists():
+        raise HTTPException(status_code=404, detail="segments dataset not found. Run scripts/build_dataset.py first.")
+    return load_csv(csv_path)
 
 
 class CorridorReliabilityRankingRow(BaseModel):
@@ -67,7 +93,37 @@ def list_corridors() -> list[CorridorMetadata]:
     meta = corridor_metadata(corridors)
     if meta.empty:
         return []
-    meta = meta.where(pd.notnull(meta), None)
+
+    # Enrich with bbox/center for map navigation when segment geometry is available.
+    try:
+        segments = _load_segments_for_corridors()
+    except HTTPException:
+        segments = pd.DataFrame()
+
+    if not segments.empty and {"segment_id", "lat", "lon"}.issubset(set(segments.columns)):
+        seg = segments[["segment_id", "lat", "lon"]].copy()
+        seg["segment_id"] = seg["segment_id"].astype(str)
+        seg["lat"] = pd.to_numeric(seg["lat"], errors="coerce")
+        seg["lon"] = pd.to_numeric(seg["lon"], errors="coerce")
+        seg = seg.dropna(subset=["segment_id", "lat", "lon"])
+
+        corridor_segments = corridors[["corridor_id", "segment_id"]].copy()
+        corridor_segments["corridor_id"] = corridor_segments["corridor_id"].astype(str)
+        corridor_segments["segment_id"] = corridor_segments["segment_id"].astype(str)
+
+        merged = corridor_segments.merge(seg, on="segment_id", how="left").dropna(subset=["lat", "lon"])
+        if not merged.empty:
+            bbox = merged.groupby("corridor_id", as_index=False).agg(
+                min_lat=("lat", "min"),
+                min_lon=("lon", "min"),
+                max_lat=("lat", "max"),
+                max_lon=("lon", "max"),
+            )
+            bbox["center_lat"] = (bbox["min_lat"] + bbox["max_lat"]) / 2
+            bbox["center_lon"] = (bbox["min_lon"] + bbox["max_lon"]) / 2
+            meta = meta.merge(bbox, on="corridor_id", how="left")
+
+    meta = meta.astype(object).where(pd.notnull(meta), None)
     return [CorridorMetadata(**record) for record in meta.to_dict(orient="records")]
 
 
