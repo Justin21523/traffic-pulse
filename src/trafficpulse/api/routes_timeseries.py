@@ -96,7 +96,7 @@ def get_timeseries(
 
     keep_cols = [col for col in ["timestamp", "segment_id", "speed_kph", "volume", "occupancy_pct"] if col in df.columns]
     df = df[keep_cols].sort_values("timestamp").reset_index(drop=True)
-    df = df.where(pd.notnull(df), None)
+    df = df.astype(object).where(pd.notnull(df), None)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.to_pydatetime()
 
     return [TrafficObservation(**record) for record in df.to_dict(orient="records")]
@@ -188,7 +188,7 @@ def get_corridor_timeseries(
 
     corridor_ts = corridor_ts[corridor_ts["corridor_id"].astype(str) == str(corridor_id)]
     corridor_ts = corridor_ts.sort_values("timestamp").reset_index(drop=True)
-    corridor_ts = corridor_ts.where(pd.notnull(corridor_ts), None)
+    corridor_ts = corridor_ts.astype(object).where(pd.notnull(corridor_ts), None)
     corridor_ts["timestamp"] = pd.to_datetime(corridor_ts["timestamp"], utc=True).dt.to_pydatetime()
 
     keep_cols = [col for col in ["timestamp", "corridor_id", "speed_kph", "volume", "occupancy_pct"] if col in corridor_ts.columns]

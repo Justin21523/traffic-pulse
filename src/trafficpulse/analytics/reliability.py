@@ -190,12 +190,12 @@ def compute_reliability_metrics(
 
     # Group by segment id to compute per-segment statistics.
     grouped = df.groupby(seg_col, as_index=False)
-    # Compute sample count, mean speed, and speed std from the speed column.
-    base = grouped[speed_col].agg(n_samples="count", mean_speed_kph="mean", speed_std_kph="std")
-    # Compute congestion frequency as the mean of a boolean indicator (True->1, False->0).
-    congestion = grouped["_is_congested"].mean().rename(columns={"_is_congested": "congestion_frequency"})
-    # Merge metric components into one table keyed by segment id.
-    metrics = base.merge(congestion, on=seg_col, how="left")
+    metrics = grouped.agg(
+        n_samples=(speed_col, "count"),
+        mean_speed_kph=(speed_col, "mean"),
+        speed_std_kph=(speed_col, "std"),
+        congestion_frequency=("_is_congested", "mean"),
+    )
 
     # Pandas std is NaN for a single sample; treat it as 0 variability for MVP readability.
     metrics["speed_std_kph"] = metrics["speed_std_kph"].fillna(0.0)

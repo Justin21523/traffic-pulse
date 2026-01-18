@@ -61,10 +61,15 @@ def reliability_rankings(
     csv_path = observations_csv_path(processed_dir, granularity_minutes)
     parquet_path = observations_parquet_path(parquet_dir, granularity_minutes)
     if not csv_path.exists() and not parquet_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="observations dataset not found. Run scripts/build_dataset.py (and scripts/aggregate_observations.py) first.",
-        )
+        fallback_minutes = int(config.preprocessing.source_granularity_minutes)
+        csv_path = observations_csv_path(processed_dir, fallback_minutes)
+        parquet_path = observations_parquet_path(parquet_dir, fallback_minutes)
+        granularity_minutes = fallback_minutes
+        if not csv_path.exists() and not parquet_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="observations dataset not found. Run scripts/build_dataset.py (and optionally scripts/aggregate_observations.py) first.",
+            )
 
     start_dt: Optional[datetime] = parse_datetime(start) if start else None
     end_dt: Optional[datetime] = parse_datetime(end) if end else None
@@ -83,6 +88,10 @@ def reliability_rankings(
                 end_dt = max_ts if max_ts.tzinfo is not None else max_ts.replace(tzinfo=timezone.utc)
             else:
                 end_dt = datetime.now(timezone.utc)
+            # `compute_reliability_rankings` treats `end` as exclusive (< end). When we derive `end_dt`
+            # from the maximum timestamp present in the data, bump it forward by one interval so the
+            # latest sample is included in the default window.
+            end_dt = end_dt + timedelta(minutes=granularity_minutes)
             start_dt = end_dt - timedelta(hours=window_hours)
         else:
             df = load_parquet(parquet_path) if config.warehouse.enabled and parquet_path.exists() else load_csv(csv_path)
@@ -98,6 +107,7 @@ def reliability_rankings(
                     end_dt = end_dt.replace(tzinfo=timezone.utc)
             else:
                 end_dt = datetime.now(timezone.utc)
+            end_dt = end_dt + timedelta(minutes=granularity_minutes)
             start_dt = end_dt - timedelta(hours=window_hours)
 
     try:
@@ -136,5 +146,5 @@ def reliability_rankings(
     if rankings.empty:
         return []
 
-    rankings = rankings.where(pd.notnull(rankings), None)
+    rankings = rankings.astype(object).where(pd.notnull(rankings), None)
     return [ReliabilityRankingRow(**record) for record in rankings.to_dict(orient="records")]

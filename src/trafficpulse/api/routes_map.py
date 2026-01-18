@@ -169,6 +169,11 @@ def get_map_snapshot(
                     end_dt = datetime.now(timezone.utc)
             else:
                 end_dt = datetime.now(timezone.utc)
+
+        # The downstream computations treat `end` as an exclusive bound (< end). When we derive `end_dt`
+        # from the maximum timestamp present in the data, bump it forward by one interval so the latest
+        # sample is included in the default window.
+        end_dt = end_dt + timedelta(minutes=granularity_minutes)
         start_dt = end_dt - timedelta(hours=window_hours)
 
     segment_ids = set(segments["segment_id"].astype(str).tolist())
@@ -228,7 +233,7 @@ def get_map_snapshot(
         return []
 
     merged = merged.sort_values("segment_id").head(int(limit)).reset_index(drop=True)
-    merged = merged.where(pd.notnull(merged), None)
+    merged = merged.astype(object).where(pd.notnull(merged), None)
     merged["n_samples"] = pd.to_numeric(merged.get("n_samples"), errors="coerce").fillna(0).astype(int)
 
     return [SegmentSnapshot(**record) for record in merged.to_dict(orient="records")]
