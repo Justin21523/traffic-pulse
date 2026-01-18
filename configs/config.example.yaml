@@ -21,10 +21,24 @@ cache:
 
 tdx:
   base_url: https://tdx.transportdata.tw/api/basic/v2
+  base_url_v1: https://tdx.transportdata.tw/api/basic/v1
+  historical_base_url: https://tdx.transportdata.tw/api/historical
   token_url: https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token
   request_timeout_seconds: 30
   max_retries: 3
+  # Base delay (seconds) used for exponential backoff when requests fail (timeouts/429/5xx).
   retry_backoff_seconds: 1.0
+  # Backoff growth factor per attempt (e.g., 1.0, 2.0, 1.5).
+  backoff_multiplier: 2.0
+  # Cap the maximum sleep between retries so a single request does not stall for too long.
+  max_backoff_seconds: 60.0
+  # Add a small random jitter to avoid thundering herds when many requests retry together.
+  jitter_seconds: 0.25
+  # If TDX responds with Retry-After (429/503), honor it as the minimum delay before retrying.
+  respect_retry_after: true
+  # Optional client-side throttle (seconds between requests). Use when you consistently hit 429.
+  # Example: 0.2 ~= 5 requests/second.
+  min_request_interval_seconds: 0.0
 
 ingestion:
   # MVP uses VD observations as the initial "segment" definition.
@@ -35,8 +49,10 @@ ingestion:
     # The client will try these endpoints in order.
     # Note: exact availability can vary by dataset; adjust as needed.
     endpoint_templates:
-      - Traffic/VD/History/City/{city}
-      - Traffic/VD/Live/City/{city}
+      - Road/Traffic/Live/VD/City/{city}
+    # Optional historical backfill endpoint (JSONL by date range, up to 7 days per request).
+    historical_endpoint_templates:
+      - v2/Historical/Road/Traffic/Live/VD/City/{city}
     cities:
       - Taipei
     # Field names and normalization rules for the selected dataset.
@@ -50,10 +66,10 @@ ingestion:
     lane_volume_aggregation: sum
     lane_occupancy_aggregation: mean
     metadata_fields:
-      name_field: VDName
+      name_field: RoadSection
       direction_field: Direction
       road_name_field: RoadName
-      link_id_field: LinkID
+      link_id_field: RoadID
       lat_field: PositionLat
       lon_field: PositionLon
     paging:
@@ -62,21 +78,22 @@ ingestion:
     # Traffic events/incidents (field names can vary; keep this config as the source of truth).
     # The client will try these endpoints in order.
     endpoint_templates:
-      - Traffic/TrafficEvent/History/City/{city}
-      - Traffic/TrafficEvent/Live/City/{city}
+      - Traffic/RoadEvent/LiveEvent/City/{city}
+    historical_endpoint_templates:
+      - Traffic/RoadEvent/Event/City/{city}
     cities:
       - Taipei
-    start_time_field: StartTime
-    end_time_field: EndTime
-    id_field: TrafficEventID
+    start_time_field: EffectiveTime
+    end_time_field: ExpireTime
+    id_field: EventID
     type_field: EventType
     description_field: Description
-    road_name_field: RoadName
+    road_name_field: Location
     direction_field: Direction
     severity_field: Severity
     # Lat/Lon fields can also be configured as dot-paths (e.g., "Position.PositionLat").
-    lat_field: PositionLat
-    lon_field: PositionLon
+    lat_field: ""
+    lon_field: ""
     paging:
       page_size: 1000
 
