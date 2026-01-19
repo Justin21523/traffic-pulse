@@ -14,6 +14,15 @@ const themeSelectEl = document.getElementById("theme-select");
 const liveIndicatorEl = document.getElementById("live-indicator");
 const cacheIndicatorEl = document.getElementById("cache-indicator");
 const copyLinkButton = document.getElementById("copy-link");
+const exportSnapshotButton = document.getElementById("export-snapshot");
+
+const dataHealthTextEl = document.getElementById("data-health-text");
+const dataHealthRefreshButton = document.getElementById("data-health-refresh");
+const dataHealthCopyCommandsButton = document.getElementById("data-health-copy-commands");
+const dataHealthHintEl = document.getElementById("data-health-hint");
+const dataHealthHintTextEl = document.getElementById("data-health-hint-text");
+const exportSegmentsCsvButton = document.getElementById("export-segments-csv");
+const exportCorridorsCsvButton = document.getElementById("export-corridors-csv");
 
 const sidebarEl = document.getElementById("sidebar");
 const sidebarResizerEl = document.getElementById("sidebar-resizer");
@@ -83,6 +92,11 @@ const toggleAnomaliesEl = document.getElementById("toggle-anomalies");
 const toggleHotspotsEl = document.getElementById("toggle-hotspots");
 const toggleEventsEl = document.getElementById("toggle-events");
 const toggleImpactEl = document.getElementById("toggle-impact");
+
+const chartHintEl = document.getElementById("chart-hint");
+const chartHintTitleEl = document.getElementById("chart-hint-title");
+const chartHintTextEl = document.getElementById("chart-hint-text");
+const chartHintActionsEl = document.getElementById("chart-hint-actions");
 
 const reliabilityThresholdEl = document.getElementById("reliability-threshold");
 const reliabilityMinSamplesEl = document.getElementById("reliability-min-samples");
@@ -405,6 +419,12 @@ let freshnessTicker = null;
 let lastLiveRefreshAtMs = 0;
 let lastCacheInfo = { hotspots: null, rankings: null, events: null };
 let lastSseState = { mode: "polling", detail: "Polling" };
+let hotspotMarkerBySegmentId = new Map();
+
+let timeseriesAbortController = null;
+let anomaliesAbortController = null;
+let impactAbortController = null;
+let impactCache = new Map();
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -453,6 +473,28 @@ function recordCache(kind, cache) {
     },
   };
   updateCacheIndicator();
+}
+
+function storageKey(kind) {
+  return `trafficpulse.cache.${kind}`;
+}
+
+function saveCached(kind, payload) {
+  try {
+    localStorage.setItem(storageKey(kind), JSON.stringify(payload));
+  } catch (err) {
+    // ignore
+  }
+}
+
+function loadCached(kind) {
+  try {
+    const raw = localStorage.getItem(storageKey(kind));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (err) {
+    return null;
+  }
 }
 
 function setFreshness({ label, detail, level }) {
@@ -632,6 +674,173 @@ function setHintVisible(el, visible) {
   else el.classList.add("hidden");
 }
 
+function setChartHint({ title, text, actions } = {}) {
+  if (!chartHintEl) return;
+  if (!text) {
+    setHintVisible(chartHintEl, false);
+    return;
+  }
+  if (chartHintTitleEl) chartHintTitleEl.textContent = title || "Notice";
+  if (chartHintTextEl) chartHintTextEl.textContent = text;
+  if (chartHintActionsEl) {
+    chartHintActionsEl.innerHTML = "";
+    for (const action of actions || []) {
+      if (!action || !action.label) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "button secondary";
+      btn.textContent = String(action.label);
+      btn.addEventListener("click", () => {
+        try {
+          action.onClick?.();
+        } catch (err) {
+          // ignore
+        }
+      });
+      chartHintActionsEl.appendChild(btn);
+    }
+  }
+  setHintVisible(chartHintEl, true);
+}
+
+async function copyText(text) {
+  const value = String(text || "");
+  if (!value) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch (err) {
+    // ignore
+  }
+  try {
+    window.prompt("Copy this text:", value);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function formatFileInfo(info) {
+  if (!info) return "missing";
+  if (!info.exists) return "missing";
+  const size = info.size_bytes != null ? `${info.size_bytes}B` : "—";
+  const mtime = info.mtime_utc ? String(info.mtime_utc) : "—";
+  return `ok (mtime=${mtime}, size=${size})`;
+}
+
+function buildFixCommands({ hasSegments, hasObservations, hasEvents, hasCorridors } = {}) {
+  const commands = [];
+  if (!hasSegments || !hasObservations) {
+    commands.push("python scripts/ingest_runner.py --live-only --live-max-iterations 2 --no-cache");
+    commands.push("python scripts/build_dataset.py");
+    commands.push("python scripts/aggregate_observations.py");
+  }
+  if (hasCorridors && (!hasObservations || !hasSegments)) {
+    commands.push("python scripts/build_corridor_rankings.py --limit 200");
+  }
+  if (!hasEvents) {
+    const endIso = latestObservationIso || new Date().toISOString();
+    const endDt = new Date(endIso);
+    const startDt = new Date(endDt.getTime() - 6 * 60 * 60 * 1000);
+    commands.push(
+      `python scripts/build_events.py --start ${startDt.toISOString()} --end ${endDt.toISOString()} --cities Taipei`
+    );
+  }
+  commands.push("python scripts/materialize_defaults.py --window-hours 24");
+  return commands;
+}
+
+async function refreshDataHealth() {
+  if (!dataHealthTextEl) return;
+  dataHealthTextEl.textContent = "Loading...";
+  setHintVisible(dataHealthHintEl, false);
+
+  let status = null;
+  let diagnostics = null;
+  try {
+    status = await fetchJson(`${API_BASE}/ui/status`);
+  } catch (err) {
+    // ignore
+  }
+  try {
+    diagnostics = await fetchJson(`${API_BASE}/ui/diagnostics`);
+  } catch (err) {
+    // ignore
+  }
+
+  const lines = [];
+  lines.push(`API_BASE: ${API_BASE}`);
+  lines.push(`Exports (current window):`);
+  lines.push(`- ${buildExportUrl("/exports/reliability/segments.csv")}`);
+  lines.push(`- ${buildExportUrl("/exports/reliability/corridors.csv")}`);
+  if (status) {
+    lines.push(`Status generated_at_utc: ${status.generated_at_utc || "—"}`);
+    lines.push(`observations_last_timestamp_utc: ${status.observations_last_timestamp_utc || "—"}`);
+    lines.push(`observations_minutes_available: ${(status.observations_minutes_available || []).join(", ") || "—"}`);
+    lines.push(`dataset_version: ${status.dataset_version || "—"}`);
+    lines.push(`live_loop_last_snapshot_timestamp: ${status.live_loop_last_snapshot_timestamp || "—"}`);
+    lines.push(`daily_backfill_last_date: ${status.daily_backfill_last_date || "—"}`);
+    lines.push(`last_ingest_ok: ${status.last_ingest_ok == null ? "—" : String(status.last_ingest_ok)}`);
+    lines.push(`last_error: ${status.last_error || "—"}`);
+    if (Array.isArray(status.updated_files) && status.updated_files.length) {
+      lines.push(`updated_files: ${status.updated_files.join(", ")}`);
+    }
+  } else {
+    lines.push("Status: unavailable (failed to fetch /ui/status)");
+  }
+
+  let hasSegments = false;
+  let hasObservations = false;
+  let hasEvents = false;
+  let hasCorridors = false;
+  if (diagnostics) {
+    lines.push("");
+    lines.push("Diagnostics:");
+    lines.push(`processed_dir: ${diagnostics.processed_dir || "—"}`);
+    lines.push(`parquet_dir: ${diagnostics.parquet_dir || "—"}`);
+    lines.push(`segments.csv: ${formatFileInfo(diagnostics.segments_csv)}`);
+    hasSegments = Boolean(diagnostics.segments_csv && diagnostics.segments_csv.exists);
+    lines.push(`events.csv: ${formatFileInfo(diagnostics.events_csv)}`);
+    hasEvents = Boolean(diagnostics.events_csv && diagnostics.events_csv.exists);
+    lines.push(`corridors.csv: ${diagnostics.corridors_csv_exists ? "ok" : "missing"} (${diagnostics.corridors_csv || "—"})`);
+    hasCorridors = Boolean(diagnostics.corridors_csv_exists);
+    const obsFiles = diagnostics.observations_csv_files || [];
+    hasObservations = Array.isArray(obsFiles) && obsFiles.some((f) => f && f.exists);
+    lines.push(`observations CSV files: ${Array.isArray(obsFiles) ? obsFiles.length : 0} (${hasObservations ? "ok" : "missing"})`);
+    if (Array.isArray(obsFiles) && obsFiles.length) {
+      for (const f of obsFiles.slice(0, 8)) {
+        lines.push(`- ${f.path}: ${formatFileInfo(f)}`);
+      }
+      if (obsFiles.length > 8) lines.push(`- … (${obsFiles.length - 8} more)`);
+    }
+    lines.push(`live_loop_state.json: ${formatFileInfo(diagnostics.live_loop_state)}`);
+    lines.push(`backfill_checkpoint.json: ${formatFileInfo(diagnostics.backfill_checkpoint)}`);
+  } else {
+    lines.push("");
+    lines.push("Diagnostics: unavailable (failed to fetch /ui/diagnostics)");
+  }
+
+  dataHealthTextEl.textContent = lines.join("\n");
+
+  const suggestions = [];
+  if (!hasSegments) suggestions.push("Missing segments.csv (run ingestion + build_dataset).");
+  if (!hasObservations) suggestions.push("Missing observations CSV (run ingestion + build_dataset).");
+  if (!hasEvents) suggestions.push("Missing events.csv (run build_events.py).");
+  if (!hasCorridors) suggestions.push("corridors.csv missing (optional; needed for corridor rankings).");
+  if (status && status.last_ingest_ok === false) suggestions.push(`Ingestion error: ${status.last_error || "unknown"}`);
+
+  if (suggestions.length && dataHealthHintTextEl) {
+    dataHealthHintTextEl.textContent = suggestions.join(" ");
+    setHintVisible(dataHealthHintEl, true);
+  } else {
+    setHintVisible(dataHealthHintEl, false);
+  }
+
+  return { hasSegments, hasObservations, hasEvents, hasCorridors };
+}
+
 function getCurrentRangeOrNull() {
   return getIsoRange();
 }
@@ -803,21 +1012,68 @@ function applyThemeToVisuals() {
 async function copyShareLink() {
   syncUrlFromUi();
   const url = window.location.href;
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(url);
-      setStatus("Link copied to clipboard.");
-      return;
-    }
-  } catch (err) {
-    // fall back below
-  }
+  await copyText(url);
+  setStatus("Link copied to clipboard.");
+}
 
-  try {
-    window.prompt("Copy this link:", url);
-  } catch (err) {
-    // ignore
+function downloadJson(filename, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportSnapshot() {
+  syncUrlFromUi();
+  const payload = {
+    exported_at_utc: new Date().toISOString(),
+    url: window.location.href,
+    api_base: API_BASE,
+    ui_state: uiState,
+    ui_status: lastUiStatus,
+    cache: lastCacheInfo,
+    selection: {
+      entity_type: entityTypeEl?.value || null,
+      segment_id: selectedSegmentId,
+      corridor_id: selectedCorridorId,
+      event_id: selectedEventId,
+    },
+    data: {
+      hotspots: hotspotRows,
+      rankings: lastRankings,
+      events,
+      timeseries: lastTimeseries,
+      event_impact: lastEventImpact,
+    },
+  };
+  downloadJson(`trafficpulse_snapshot_${new Date().toISOString().replace(/[:.]/g, "-")}.json`, payload);
+  setStatus("Exported JSON snapshot.");
+}
+
+function buildExportUrl(path) {
+  const url = new URL(`${API_BASE}${path}`);
+  const range = getIsoRange();
+  if (range) {
+    url.searchParams.set("start", range.start);
+    url.searchParams.set("end", range.end);
   }
+  if (minutesEl && minutesEl.value) url.searchParams.set("minutes", String(minutesEl.value));
+  const overrides = getNested(uiState, "overrides.reliability", null);
+  if (overrides) {
+    if (overrides.congestion_speed_threshold_kph != null)
+      url.searchParams.set("congestion_speed_threshold_kph", String(overrides.congestion_speed_threshold_kph));
+    if (overrides.min_samples != null) url.searchParams.set("min_samples", String(overrides.min_samples));
+    if (overrides.weight_mean_speed != null) url.searchParams.set("weight_mean_speed", String(overrides.weight_mean_speed));
+    if (overrides.weight_speed_std != null) url.searchParams.set("weight_speed_std", String(overrides.weight_speed_std));
+    if (overrides.weight_congestion_frequency != null)
+      url.searchParams.set("weight_congestion_frequency", String(overrides.weight_congestion_frequency));
+  }
+  return url.toString();
 }
 
 let _layoutResizeRaf = null;
@@ -1703,6 +1959,21 @@ async function fetchJson(url) {
   return await resp.json();
 }
 
+async function fetchJsonWithMeta(url, { signal } = {}) {
+  const resp = await fetch(url, { headers: { accept: "application/json" }, signal });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
+  }
+  return {
+    data: await resp.json(),
+    cache: {
+      status: resp.headers.get("x-cache"),
+      ttl: resp.headers.get("x-cache-ttl"),
+    },
+  };
+}
+
 function unwrapItemsResponse(data) {
   if (Array.isArray(data)) return { items: data, reason: null };
   if (data && typeof data === "object" && Array.isArray(data.items)) {
@@ -1714,8 +1985,8 @@ function unwrapItemsResponse(data) {
   };
 }
 
-async function fetchItems(url) {
-  const resp = await fetch(url, { headers: { accept: "application/json" } });
+async function fetchItems(url, { signal } = {}) {
+  const resp = await fetch(url, { headers: { accept: "application/json" }, signal });
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
@@ -1903,6 +2174,7 @@ function updateHotspotLegend(metric, range) {
 
 function renderHotspots(rows, metric) {
   hotspotsLayer.clearLayers();
+  hotspotMarkerBySegmentId = new Map();
   if (!rows || !rows.length) {
     updateHotspotInfo("No hotspots loaded.");
     updateHotspotLegend(null, null);
@@ -1944,6 +2216,8 @@ function renderHotspots(rows, metric) {
       fillOpacity: 0.78,
     }).addTo(hotspotsLayer);
 
+    hotspotMarkerBySegmentId.set(String(row.segment_id), marker);
+
     const label = metricLabel(metric);
     const formatted = formatMetricValue(metric, value);
     marker.bindPopup(`${row.segment_id} · ${label}: ${formatted}`, { closeButton: false });
@@ -1971,6 +2245,7 @@ function clearHotspots() {
   hotspotsLoaded = false;
   lastHotspotsReason = null;
   hotspotsLayer.clearLayers();
+  hotspotMarkerBySegmentId = new Map();
   updateHotspotLegend(null, null);
   updateHotspotInfo("No hotspots loaded.");
   setStatus("Hotspots cleared.");
@@ -2004,7 +2279,17 @@ async function loadHotspots() {
     hotspotRows = items;
     lastHotspotsReason = reason;
     recordCache("hotspots", cache);
+    saveCached("hotspots", { at_utc: new Date().toISOString(), url: url.toString(), items, reason });
   } catch (err) {
+    const cached = loadCached("hotspots");
+    if (cached && Array.isArray(cached.items)) {
+      hotspotRows = cached.items;
+      lastHotspotsReason = cached.reason || null;
+      hotspotsLoaded = true;
+      renderHotspots(hotspotRows, metric);
+      setStatus(`Hotspots loaded from cache (${hotspotRows.length} rows, cached_at=${cached.at_utc || "?"}).`);
+      return;
+    }
     hotspotsLoaded = false;
     lastHotspotsReason = null;
     updateHotspotInfo("Failed to load hotspots. Ensure the API includes /map/snapshot and a dataset is built.");
@@ -2065,6 +2350,8 @@ function initHotspotAutoReload() {
 }
 
 async function loadAnomalies(entity, range, minutes) {
+  if (anomaliesAbortController) anomaliesAbortController.abort();
+  anomaliesAbortController = new AbortController();
   const url =
     entity.type === "corridor"
       ? new URL(`${API_BASE}/anomalies/corridors`)
@@ -2079,7 +2366,8 @@ async function loadAnomalies(entity, range, minutes) {
   applyAnomaliesOverrides(url);
 
   try {
-    return await fetchJson(url.toString());
+    const { items } = await fetchItems(url.toString(), { signal: anomaliesAbortController.signal });
+    return items;
   } catch (err) {
     return null;
   }
@@ -2198,8 +2486,13 @@ function renderEventImpactChart(impact) {
   if (!points.length) {
     Plotly.purge(chartEl);
     setStatus("No time series available for this event impact.");
+    setChartHint({
+      title: "No impact timeseries",
+      text: "No time series is available for this event impact (try a different granularity or time window).",
+    });
     return;
   }
+  setChartHint(null);
 
   const colors = themeColors();
   const x = points.map((p) => p.timestamp);
@@ -2295,12 +2588,17 @@ async function loadTimeseries() {
   const entity = getSelectedEntity();
   if (!entity.id) {
     setStatus(entity.type === "corridor" ? "Select a corridor first." : "Select a segment first.");
+    setChartHint({
+      title: "Missing selection",
+      text: entity.type === "corridor" ? "Select a corridor to load a time series." : "Select a segment to load a time series.",
+    });
     return;
   }
 
   const range = getIsoRange();
   if (!range) {
     setStatus("Invalid time range. Please select start/end.");
+    setChartHint({ title: "Invalid time range", text: "Please select a valid start/end time window." });
     return;
   }
 
@@ -2317,12 +2615,12 @@ async function loadTimeseries() {
   if (minutes) url.searchParams.set("minutes", minutes);
 
   setStatus("Loading timeseries...");
+  setChartHint(null);
+  if (timeseriesAbortController) timeseriesAbortController.abort();
+  timeseriesAbortController = new AbortController();
   try {
-    const raw = await fetchJson(url.toString());
-    const points =
-      entity.type === "corridor"
-        ? raw.map((p) => ({ timestamp: p.timestamp, speed_kph: p.speed_kph, volume: p.volume }))
-        : raw.map((p) => ({ timestamp: p.timestamp, speed_kph: p.speed_kph, volume: p.volume }));
+    const { items } = await fetchItems(url.toString(), { signal: timeseriesAbortController.signal });
+    const points = items.map((p) => ({ timestamp: p.timestamp, speed_kph: p.speed_kph, volume: p.volume }));
 
     lastTimeseries = { entity, range, minutes, points, anomalies: null };
 
@@ -2332,9 +2630,22 @@ async function loadTimeseries() {
       lastTimeseries.anomalies = anomalies;
     }
 
+    if (!points.length) {
+      setChartHint({
+        title: "No data",
+        text: "No time series points returned for this time window.",
+        actions: [{ label: "Use 24h window", onClick: () => quickUse24hWindow() }],
+      });
+    }
     renderTimeseries(points, { title: getEntityTitle(entity), anomalies });
   } catch (err) {
+    if (err?.name === "AbortError") return;
     setStatus(`Failed to load timeseries: ${err.message}`);
+    setChartHint({
+      title: "Timeseries error",
+      text: `Failed to load time series: ${err.message}`,
+      actions: [{ label: "Refresh health", onClick: () => refreshDataHealth() }],
+    });
   }
 }
 
@@ -2350,6 +2661,7 @@ function selectSegment(segmentId, { centerMap } = { centerMap: true }) {
     map.setView(marker.getLatLng(), Math.max(map.getZoom(), 14), { animate: true });
     marker.openPopup();
   }
+  updateSelectionStyles();
   scheduleUrlSync();
 }
 
@@ -2386,6 +2698,47 @@ function centerMapOnCorridor(corridorId) {
   map.fitBounds(bounds.pad(0.08), { animate: true });
 }
 
+function updateSelectionStyles() {
+  const selectedSeg = selectedSegmentId ? String(selectedSegmentId) : null;
+  const selectedEv = selectedEventId ? String(selectedEventId) : null;
+
+  for (const [segId, marker] of markerById.entries()) {
+    if (!marker) continue;
+    const isSelected = selectedSeg != null && String(segId) === selectedSeg;
+    if (typeof marker.setStyle === "function") {
+      marker.setStyle({
+        weight: isSelected ? 3 : 2,
+        fillOpacity: isSelected ? 0.85 : 0.6,
+      });
+    }
+    if (typeof marker.setRadius === "function") marker.setRadius(isSelected ? 7 : 5);
+  }
+
+  for (const [eventId, marker] of eventMarkerById.entries()) {
+    if (!marker) continue;
+    const isSelected = selectedEv != null && String(eventId) === selectedEv;
+    if (typeof marker.setStyle === "function") {
+      marker.setStyle({
+        weight: isSelected ? 3 : 2,
+        fillOpacity: isSelected ? 0.95 : 0.85,
+      });
+    }
+    if (typeof marker.setRadius === "function") marker.setRadius(isSelected ? 8 : 6);
+  }
+
+  for (const [segId, marker] of hotspotMarkerBySegmentId.entries()) {
+    if (!marker) continue;
+    const isSelected = selectedSeg != null && String(segId) === selectedSeg;
+    if (typeof marker.setStyle === "function") {
+      marker.setStyle({
+        weight: isSelected ? 3 : 2,
+        fillOpacity: isSelected ? 0.9 : 0.78,
+      });
+    }
+    if (typeof marker.setRadius === "function") marker.setRadius(isSelected ? 9 : 7);
+  }
+}
+
 function selectCorridor(corridorId, { centerMap } = { centerMap: false }) {
   entityTypeEl.value = "corridor";
   selectedCorridorId = corridorId;
@@ -2396,6 +2749,7 @@ function selectCorridor(corridorId, { centerMap } = { centerMap: false }) {
     centerMapOnCorridor(corridorId);
     setStatus(`Centered on corridor ${corridorId}.`);
   }
+  updateSelectionStyles();
   scheduleUrlSync();
 }
 
@@ -2408,6 +2762,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
 
   impactSegmentsLayer.clearLayers();
   lastEventImpact = null;
+  updateSelectionStyles();
 
   const marker = eventMarkerById.get(eventId);
   if (centerMap && marker) {
@@ -2424,8 +2779,19 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   applyImpactOverrides(url);
 
   setStatus("Loading event impact...");
-  fetchJson(url.toString())
-    .then((impact) => {
+  if (impactAbortController) impactAbortController.abort();
+  impactAbortController = new AbortController();
+
+  const cacheKey = url.toString();
+  const cached = impactCache.get(cacheKey);
+  const loadPromise = cached
+    ? Promise.resolve({ data: cached, cache: { status: "HIT", ttl: null } })
+    : fetchJsonWithMeta(cacheKey, { signal: impactAbortController.signal });
+
+  loadPromise
+    .then(({ data }) => {
+      const impact = data;
+      impactCache.set(cacheKey, impact);
       lastEventImpact = impact;
       updateEventInfo(event, impact);
       renderEventImpactChart(impact);
@@ -2446,7 +2812,13 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
       setStatus("Event impact loaded.");
     })
     .catch((err) => {
+      if (err?.name === "AbortError") return;
       setStatus(`Failed to load event impact: ${err.message}`);
+      setChartHint({
+        title: "Event impact error",
+        text: `Failed to load event impact: ${err.message}`,
+        actions: [{ label: "Refresh health", onClick: () => refreshDataHealth() }],
+      });
     });
 }
 
@@ -2494,6 +2866,7 @@ async function loadSegments() {
   }
 
   if (bounds) map.fitBounds(bounds.pad(0.08));
+  updateSelectionStyles();
   setStatus(`Loaded ${segments.length} segments.`);
 }
 
@@ -2645,10 +3018,21 @@ async function loadRankings() {
     lastRankings = items;
     lastRankingsReason = reason;
     recordCache("rankings", cache);
+    saveCached("rankings", { at_utc: new Date().toISOString(), url: url.toString(), items, reason, type });
     renderRankings(items, type);
     rankingsLoaded = true;
     setStatus(`Loaded ${items.length} ranking rows.`);
   } catch (err) {
+    const cached = loadCached("rankings");
+    if (cached && Array.isArray(cached.items)) {
+      lastRankings = cached.items;
+      lastRankingsReason = cached.reason || null;
+      const cachedType = cached.type || type;
+      renderRankings(lastRankings, cachedType);
+      rankingsLoaded = true;
+      setStatus(`Rankings loaded from cache (${lastRankings.length} rows, cached_at=${cached.at_utc || "?"}).`);
+      return;
+    }
     rankingsLoaded = false;
     lastRankingsReason = null;
     rankingsEl.textContent = "Failed to load rankings.";
@@ -2742,6 +3126,7 @@ function renderEventMarkers(items) {
     marker.on("click", () => selectEvent(event.event_id, { centerMap: false }));
     eventMarkerById.set(event.event_id, marker);
   }
+  updateSelectionStyles();
 }
 
 function applyEventsFilters() {
@@ -2833,7 +3218,24 @@ async function loadEvents() {
     events = items;
     lastEventsReason = reason;
     recordCache("events", cache);
+    saveCached("events", { at_utc: new Date().toISOString(), url: url.toString(), items, reason });
   } catch (err) {
+    const cached = loadCached("events");
+    if (cached && Array.isArray(cached.items)) {
+      events = cached.items;
+      lastEventsReason = cached.reason || null;
+      eventsLoaded = true;
+      eventsById = new Map(events.map((e) => [e.event_id, e]));
+      impactSegmentsLayer.clearLayers();
+      selectedEventId = null;
+      lastEventImpact = null;
+      lastEventsClearedReason = null;
+      updateEventInfo(null, null);
+      populateEventsTypeOptions(events);
+      applyEventsFilters();
+      setStatus(`Events loaded from cache (${events.length} rows, cached_at=${cached.at_utc || "?"}).`);
+      return;
+    }
     eventsLoaded = false;
     eventsEl.textContent = "Failed to load events. Run scripts/build_events.py and check ingestion.events config.";
     setStatus(`Failed to load events: ${err.message}`);
@@ -3015,6 +3417,19 @@ initTimeseriesFollowLatest();
 initEventsPanel();
 initQuickGuides();
 if (copyLinkButton) copyLinkButton.addEventListener("click", copyShareLink);
+if (exportSnapshotButton) exportSnapshotButton.addEventListener("click", exportSnapshot);
+if (exportSegmentsCsvButton)
+  exportSegmentsCsvButton.addEventListener("click", () => window.open(buildExportUrl("/exports/reliability/segments.csv"), "_blank"));
+if (exportCorridorsCsvButton)
+  exportCorridorsCsvButton.addEventListener("click", () => window.open(buildExportUrl("/exports/reliability/corridors.csv"), "_blank"));
+if (dataHealthRefreshButton) dataHealthRefreshButton.addEventListener("click", refreshDataHealth);
+if (dataHealthCopyCommandsButton)
+  dataHealthCopyCommandsButton.addEventListener("click", async () => {
+    const health = await refreshDataHealth();
+    const cmds = buildFixCommands(health || {});
+    await copyText(cmds.join("\n"));
+    setStatus("Fix commands copied to clipboard.");
+  });
 
 loadUiDefaultsFromApi().then((defaults) => {
   if (defaults) applyDefaultsToForm(defaults);
@@ -3022,6 +3437,7 @@ loadUiDefaultsFromApi().then((defaults) => {
   applyUrlOverridesToForm();
   applyThemeFromState();
   scheduleUrlSync();
+  refreshDataHealth();
 });
 
 setDefaultTimeRange();

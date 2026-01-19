@@ -35,6 +35,9 @@
         <button class="topbar-button secondary" id="copy-link" type="button" title="Copy a shareable dashboard link">
           Copy link
         </button>
+        <button class="topbar-button secondary" id="export-snapshot" type="button" title="Download a JSON snapshot">
+          Export JSON
+        </button>
       </div>
       <div class="status" id="status">Ready.</div>
     </header>
@@ -45,6 +48,23 @@
           <div class="panel-title">Data Source</div>
           <div class="panel-body small">
             API: <span class="mono" id="api-base"></span>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="data-health">
+          <div class="panel-title">Data Health</div>
+          <div class="panel-body">
+            <div class="button-row">
+              <button class="button secondary" id="data-health-refresh">Refresh health</button>
+              <button class="button secondary" id="data-health-copy-commands">Copy fix commands</button>
+              <button class="button secondary" id="export-segments-csv" type="button">Export segments CSV</button>
+              <button class="button secondary" id="export-corridors-csv" type="button">Export corridors CSV</button>
+            </div>
+            <div class="hint-box hidden" id="data-health-hint">
+              <div class="hint-title">Suggested actions</div>
+              <div class="hint-text" id="data-health-hint-text"></div>
+            </div>
+            <pre class="mono pre" id="data-health-text">Loading...</pre>
           </div>
         </div>
 
@@ -412,6 +432,11 @@
         <div class="resizer-horizontal" id="chart-resizer" title="Drag to resize"></div>
         <div class="chart">
           <div class="chart-title">Time Series</div>
+          <div class="hint-box hidden" id="chart-hint">
+            <div class="hint-title" id="chart-hint-title">Notice</div>
+            <div class="hint-text" id="chart-hint-text"></div>
+            <div class="button-row" id="chart-hint-actions"></div>
+          </div>
           <div class="chart-body" id="chart"></div>
         </div>
       </section>
