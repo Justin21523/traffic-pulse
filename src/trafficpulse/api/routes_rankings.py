@@ -57,6 +57,36 @@ def reliability_rankings(
     config = get_config()
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
 
+    # Fast path: if the caller didn't provide a time range or overrides, serve a materialized ranking.
+    if (
+        start is None
+        and end is None
+        and congestion_speed_threshold_kph is None
+        and min_samples is None
+        and weight_mean_speed is None
+        and weight_speed_std is None
+        and weight_congestion_frequency is None
+    ):
+        window_hours = int(config.analytics.reliability.default_window_hours)
+        mat_path = config.paths.cache_dir / f"materialized_rankings_segments_{granularity_minutes}m_{window_hours}h.csv"
+        if mat_path.exists():
+            try:
+                df = load_csv(mat_path)
+            except Exception:
+                df = pd.DataFrame()
+            if df.empty:
+                return ItemsResponse(
+                    items=[],
+                    reason=EmptyReason(
+                        code="materialized_empty",
+                        message="Materialized rankings exist but are empty.",
+                        suggestion="Re-run scripts/materialize_defaults.py after building datasets.",
+                    ),
+                )
+            df = df.sort_values("rank").head(int(limit)).reset_index(drop=True)
+            df = df.astype(object).where(pd.notnull(df), None)
+            return ItemsResponse(items=[ReliabilityRankingRow(**record) for record in df.to_dict(orient="records")])
+
     processed_dir = config.paths.processed_dir
     parquet_dir = config.warehouse.parquet_dir
     csv_path = observations_csv_path(processed_dir, granularity_minutes)
@@ -177,3 +207,29 @@ def reliability_rankings(
 
     rankings = rankings.astype(object).where(pd.notnull(rankings), None)
     return ItemsResponse(items=[ReliabilityRankingRow(**record) for record in rankings.to_dict(orient="records")])
+
+
+@router.get("/v1/rankings/reliability", response_model=list[ReliabilityRankingRow])
+def reliability_rankings_v1(
+    start: Optional[str] = Query(default=None, description="Start datetime (ISO 8601)."),
+    end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
+    limit: int = Query(default=200, ge=1, le=5000),
+    minutes: Optional[int] = Query(default=None, ge=1, description="Observation granularity in minutes (default: config)."),
+    congestion_speed_threshold_kph: Optional[float] = Query(default=None, gt=0),
+    min_samples: Optional[int] = Query(default=None, ge=1),
+    weight_mean_speed: Optional[float] = Query(default=None, ge=0),
+    weight_speed_std: Optional[float] = Query(default=None, ge=0),
+    weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
+) -> list[ReliabilityRankingRow]:
+    """Legacy list-only variant of `/rankings/reliability`."""
+    return reliability_rankings(
+        start=start,
+        end=end,
+        limit=limit,
+        minutes=minutes,
+        congestion_speed_threshold_kph=congestion_speed_threshold_kph,
+        min_samples=min_samples,
+        weight_mean_speed=weight_mean_speed,
+        weight_speed_std=weight_speed_std,
+        weight_congestion_frequency=weight_congestion_frequency,
+    ).items

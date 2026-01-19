@@ -178,6 +178,18 @@ def list_events(
     return ItemsResponse(items=[TrafficEvent(**record) for record in df.to_dict(orient="records")])
 
 
+@router.get("/v1/events", response_model=list[TrafficEvent])
+def list_events_v1(
+    start: Optional[str] = Query(default=None, description="Start datetime (ISO 8601)."),
+    end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
+    bbox: Optional[str] = Query(default=None, description="Bounding box as 'min_lon,min_lat,max_lon,max_lat'."),
+    city: Optional[str] = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=5000),
+) -> list[TrafficEvent]:
+    """Legacy list-only variant of `/events`."""
+    return list_events(start=start, end=end, bbox=bbox, city=city, limit=limit).items
+
+
 @router.get("/events/{event_id}", response_model=TrafficEvent)
 def get_event(event_id: str) -> TrafficEvent:
     config = get_config()

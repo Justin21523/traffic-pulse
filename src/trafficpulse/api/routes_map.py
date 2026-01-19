@@ -70,6 +70,69 @@ def get_map_snapshot(
     config = get_config()
     processed_dir = config.paths.processed_dir
 
+    # Fast path: if the caller didn't provide a time range or overrides, serve a materialized snapshot.
+    if (
+        start is None
+        and end is None
+        and congestion_speed_threshold_kph is None
+        and min_samples is None
+        and weight_mean_speed is None
+        and weight_speed_std is None
+        and weight_congestion_frequency is None
+    ):
+        mat_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
+        mat_hours = int(config.analytics.reliability.default_window_hours)
+        mat_path = config.paths.cache_dir / f"materialized_map_snapshot_{mat_minutes}m_{mat_hours}h.csv"
+        if mat_path.exists():
+            try:
+                df = load_csv(mat_path)
+            except Exception:
+                df = pd.DataFrame()
+            if df.empty:
+                return ItemsResponse(
+                    items=[],
+                    reason=EmptyReason(
+                        code="materialized_empty",
+                        message="Materialized snapshot exists but is empty.",
+                        suggestion="Re-run scripts/materialize_defaults.py after building datasets.",
+                    ),
+                )
+
+            if city and "city" in df.columns:
+                df = df[df["city"].astype(str) == str(city)]
+            if bbox:
+                try:
+                    min_lon, min_lat, max_lon, max_lat = _parse_bbox(bbox)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                if {"lat", "lon"}.issubset(set(df.columns)):
+                    df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
+                    df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+                    df = df.dropna(subset=["lat", "lon"])
+                    df = df[
+                        (df["lat"] >= min_lat)
+                        & (df["lat"] <= max_lat)
+                        & (df["lon"] >= min_lon)
+                        & (df["lon"] <= max_lon)
+                    ]
+
+            if df.empty:
+                return ItemsResponse(
+                    items=[],
+                    reason=EmptyReason(
+                        code="materialized_no_matches",
+                        message="Materialized snapshot has no rows for the current filters.",
+                        suggestion="Try zooming out or removing city/bbox filters.",
+                    ),
+                )
+
+            df = df.sort_values("segment_id").head(int(limit)).reset_index(drop=True)
+            df = df.astype(object).where(pd.notnull(df), None)
+            df["n_samples"] = pd.to_numeric(df.get("n_samples"), errors="coerce").fillna(0).astype(int)
+            keep = ["segment_id", "lat", "lon", "n_samples", "mean_speed_kph", "speed_std_kph", "congestion_frequency"]
+            df = df[[c for c in keep if c in df.columns]]
+            return ItemsResponse(items=[SegmentSnapshot(**record) for record in df.to_dict(orient="records")])
+
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
     parquet_dir = config.warehouse.parquet_dir
     obs_csv = observations_csv_path(processed_dir, granularity_minutes)
@@ -287,3 +350,33 @@ def get_map_snapshot(
     merged["n_samples"] = pd.to_numeric(merged.get("n_samples"), errors="coerce").fillna(0).astype(int)
 
     return ItemsResponse(items=[SegmentSnapshot(**record) for record in merged.to_dict(orient="records")])
+
+
+@router.get("/v1/map/snapshot", response_model=list[SegmentSnapshot])
+def get_map_snapshot_v1(
+    start: Optional[str] = Query(default=None, description="Start datetime (ISO 8601)."),
+    end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
+    minutes: Optional[int] = Query(default=None, ge=1, description="Observation granularity in minutes (default: config)."),
+    bbox: Optional[str] = Query(default=None, description="Bounding box as 'min_lon,min_lat,max_lon,max_lat'."),
+    city: Optional[str] = Query(default=None),
+    limit: int = Query(default=5000, ge=1, le=50000),
+    congestion_speed_threshold_kph: Optional[float] = Query(default=None, gt=0),
+    min_samples: Optional[int] = Query(default=None, ge=1),
+    weight_mean_speed: Optional[float] = Query(default=None, ge=0),
+    weight_speed_std: Optional[float] = Query(default=None, ge=0),
+    weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
+) -> list[SegmentSnapshot]:
+    """Legacy list-only variant of `/map/snapshot`."""
+    return get_map_snapshot(
+        start=start,
+        end=end,
+        minutes=minutes,
+        bbox=bbox,
+        city=city,
+        limit=limit,
+        congestion_speed_threshold_kph=congestion_speed_threshold_kph,
+        min_samples=min_samples,
+        weight_mean_speed=weight_mean_speed,
+        weight_speed_std=weight_speed_std,
+        weight_congestion_frequency=weight_congestion_frequency,
+    ).items
