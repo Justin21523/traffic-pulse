@@ -143,6 +143,61 @@ class IngestionSection(BaseModel):
     events: EventsIngestionSection = Field(default_factory=EventsIngestionSection)
 
 
+class ExternalCsvSource(BaseModel):
+    enabled: bool = False
+    csv_path: Path
+    source_name: str
+
+
+class WeatherSourcesSection(BaseModel):
+    # Canonical output: data/processed/weather_observations.csv
+    enabled: bool = False
+    # csv: ingest from configs/weather.csv
+    # open_meteo: fetch current observations from Open-Meteo (no API key required)
+    provider: str = "csv"
+    csv_path: Path = Path("configs/weather.csv")
+    source_name: str = "weather_csv"
+    open_meteo_city: str = "Taipei"
+    open_meteo_lat: float = 25.033
+    open_meteo_lon: float = 121.5654
+
+
+class RoadworksSourcesSection(BaseModel):
+    # Canonical output: data/processed/events_roadworks.csv
+    enabled: bool = False
+    csv_path: Path = Path("configs/roadworks.csv")
+    source_name: str = "roadworks_csv"
+
+
+class IncidentsSourcesSection(BaseModel):
+    # Canonical output: data/processed/events_incidents_extra.csv
+    enabled: bool = False
+    csv_path: Path = Path("configs/incidents.csv")
+    source_name: str = "incidents_csv"
+
+
+class CalendarSourcesSection(BaseModel):
+    # Canonical output: data/processed/events_calendar.csv
+    enabled: bool = False
+    csv_path: Path = Path("configs/events_calendar.csv")
+    source_name: str = "events_calendar_csv"
+
+
+class RoadNetworkSourcesSection(BaseModel):
+    # Enrichment file keyed by segment_id. Used by analytics for baselines/stratification.
+    enabled: bool = False
+    csv_path: Path = Path("configs/segments_enrichment.csv")
+    source_name: str = "road_network_csv"
+
+
+class SourcesSection(BaseModel):
+    weather: WeatherSourcesSection = Field(default_factory=WeatherSourcesSection)
+    roadworks: RoadworksSourcesSection = Field(default_factory=RoadworksSourcesSection)
+    incidents: IncidentsSourcesSection = Field(default_factory=IncidentsSourcesSection)
+    calendar: CalendarSourcesSection = Field(default_factory=CalendarSourcesSection)
+    road_network: RoadNetworkSourcesSection = Field(default_factory=RoadNetworkSourcesSection)
+
+
 class PreprocessingSection(BaseModel):
     source_granularity_minutes: int = 5
     target_granularity_minutes: int = 15
@@ -249,6 +304,7 @@ class AppConfig(BaseModel):
     cache: CacheSection = Field(default_factory=CacheSection)
     tdx: TdxSection = Field(default_factory=TdxSection)
     ingestion: IngestionSection = Field(default_factory=IngestionSection)
+    sources: SourcesSection = Field(default_factory=SourcesSection)
     preprocessing: PreprocessingSection = Field(default_factory=PreprocessingSection)
     analytics: AnalyticsSection = Field(default_factory=AnalyticsSection)
     api: ApiSection = Field(default_factory=ApiSection)
@@ -261,6 +317,25 @@ class AppConfig(BaseModel):
                 "processed_dir": _resolve_path(repo_root, self.paths.processed_dir),
                 "cache_dir": _resolve_path(repo_root, self.paths.cache_dir),
                 "outputs_dir": _resolve_path(repo_root, self.paths.outputs_dir),
+            }
+        )
+        updated_sources = self.sources.model_copy(
+            update={
+                "weather": self.sources.weather.model_copy(
+                    update={"csv_path": _resolve_path(repo_root, self.sources.weather.csv_path)}
+                ),
+                "roadworks": self.sources.roadworks.model_copy(
+                    update={"csv_path": _resolve_path(repo_root, self.sources.roadworks.csv_path)}
+                ),
+                "incidents": self.sources.incidents.model_copy(
+                    update={"csv_path": _resolve_path(repo_root, self.sources.incidents.csv_path)}
+                ),
+                "calendar": self.sources.calendar.model_copy(
+                    update={"csv_path": _resolve_path(repo_root, self.sources.calendar.csv_path)}
+                ),
+                "road_network": self.sources.road_network.model_copy(
+                    update={"csv_path": _resolve_path(repo_root, self.sources.road_network.csv_path)}
+                ),
             }
         )
         updated_corridors = self.analytics.corridors.model_copy(
@@ -280,6 +355,7 @@ class AppConfig(BaseModel):
                 "paths": updated_paths,
                 "warehouse": updated_warehouse,
                 "analytics": updated_analytics,
+                "sources": updated_sources,
             }
         )
 

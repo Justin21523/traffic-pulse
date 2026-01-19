@@ -97,6 +97,30 @@ ingestion:
     paging:
       page_size: 1000
 
+sources:
+  # Optional external sources to improve explainability and event coverage.
+  # All are disabled by default; enable and provide the CSV files to ingest them.
+  weather:
+    enabled: false
+    csv_path: configs/weather.csv
+    source_name: weather_csv
+  roadworks:
+    enabled: false
+    csv_path: configs/roadworks.csv
+    source_name: roadworks_csv
+  incidents:
+    enabled: false
+    csv_path: configs/incidents.csv
+    source_name: incidents_csv
+  calendar:
+    enabled: false
+    csv_path: configs/events_calendar.csv
+    source_name: events_calendar_csv
+  road_network:
+    enabled: false
+    csv_path: configs/segments_enrichment.csv
+    source_name: road_network_csv
+
 preprocessing:
   source_granularity_minutes: 5
   # Target aggregation interval used for downstream analytics and API responses.

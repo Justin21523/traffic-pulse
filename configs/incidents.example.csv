@@ -1,0 +1,2 @@
+event_id,start_time,end_time,event_type,description,road_name,direction,severity,lat,lon,city
+inc_001,2026-01-01T02:30:00Z,2026-01-01T03:30:00Z,incident,Minor collision,Example Hwy,S,1,25.05,121.52,Taipei

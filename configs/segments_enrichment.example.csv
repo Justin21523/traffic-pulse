@@ -1,0 +1,2 @@
+segment_id,road_class,speed_limit_kph,lanes,intersection_density
+0001,arterial,50,3,0.8

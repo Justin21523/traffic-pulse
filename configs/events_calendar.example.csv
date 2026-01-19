@@ -1,0 +1,2 @@
+event_id,start_time,end_time,event_type,description,road_name,direction,severity,lat,lon,city
+evt_001,2026-01-01T10:00:00Z,2026-01-01T14:00:00Z,planned_event,Large sports event,Example Stadium,,1,25.06,121.55,Taipei

@@ -1,0 +1,2 @@
+event_id,start_time,end_time,event_type,description,road_name,direction,severity,lat,lon,city
+rw_001,2026-01-01T01:00:00Z,2026-01-01T05:00:00Z,roadworks,Lane closure for maintenance,Example Rd,E,2,25.033,121.565,Taipei
