@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -12,7 +13,7 @@ from trafficpulse.analytics.reliability import (
     compute_reliability_rankings,
     reliability_spec_from_config,
 )
-from trafficpulse.api.schemas import EmptyReason, ItemsResponse
+from trafficpulse.api.schemas import EmptyReason, ItemsResponse, ReasonCode
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
@@ -34,10 +35,82 @@ class ReliabilityRankingRow(BaseModel):
     mean_speed_kph: float
     speed_std_kph: float
     congestion_frequency: float
+    coverage_pct: Optional[float] = None
+    speed_missing_pct: Optional[float] = None
+    baseline_median_speed_kph: Optional[float] = None
+    baseline_iqr_speed_kph: Optional[float] = None
     penalty_mean_speed: Optional[float] = None
     penalty_speed_std: Optional[float] = None
     penalty_congestion_frequency: Optional[float] = None
     reliability_score: Optional[float] = None
+
+
+def _load_segment_quality(cache_dir: Path, *, minutes: int, window_hours: int) -> pd.DataFrame:
+    path = cache_dir / f"segment_quality_{int(minutes)}m_{int(window_hours)}h.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = load_csv(path)
+    except Exception:
+        return pd.DataFrame()
+    if df.empty or "segment_id" not in df.columns:
+        return pd.DataFrame()
+    df = df.copy()
+    df["segment_id"] = df["segment_id"].astype(str)
+    for col in ["coverage_pct", "speed_missing_pct"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    keep = [c for c in ["segment_id", "coverage_pct", "speed_missing_pct"] if c in df.columns]
+    return df[keep].drop_duplicates(subset=["segment_id"], keep="last")
+
+
+def _load_baselines(cache_dir: Path, *, minutes: int) -> pd.DataFrame:
+    preferred = cache_dir / f"baselines_speed_{int(minutes)}m_7d.csv"
+    candidates: list[Path] = []
+    if preferred.exists():
+        candidates = [preferred]
+    else:
+        try:
+            candidates = sorted(
+                cache_dir.glob(f"baselines_speed_{int(minutes)}m_*.csv"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except Exception:
+            candidates = []
+    if not candidates:
+        return pd.DataFrame()
+    try:
+        df = load_csv(candidates[0])
+    except Exception:
+        return pd.DataFrame()
+    if df.empty or "segment_id" not in df.columns:
+        return pd.DataFrame()
+    df = df.copy()
+    df["segment_id"] = df["segment_id"].astype(str)
+    for col in ["weekday", "hour", "median_speed_kph", "iqr_speed_kph"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _baseline_for_timestamp(df: pd.DataFrame, *, ts: datetime) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    weekday = int(ts.weekday())
+    hour = int(ts.hour)
+    out = df
+    if "weekday" in out.columns:
+        out = out[out["weekday"].fillna(-1).astype(int) == weekday]
+    if "hour" in out.columns:
+        out = out[out["hour"].fillna(-1).astype(int) == hour]
+    if out.empty:
+        return pd.DataFrame()
+    keep = [c for c in ["segment_id", "median_speed_kph", "iqr_speed_kph"] if c in out.columns]
+    out = out[keep].drop_duplicates(subset=["segment_id"], keep="last")
+    return out.rename(
+        columns={"median_speed_kph": "baseline_median_speed_kph", "iqr_speed_kph": "baseline_iqr_speed_kph"}
+    )
 
 
 @router.get("/rankings/reliability", response_model=ItemsResponse[ReliabilityRankingRow])
@@ -53,6 +126,9 @@ def reliability_rankings(
     weight_mean_speed: Optional[float] = Query(default=None, ge=0),
     weight_speed_std: Optional[float] = Query(default=None, ge=0),
     weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
+    include_quality: bool = Query(default=False, description="Include segment quality (coverage/missing rates)."),
+    include_baseline: bool = Query(default=False, description="Include baseline median/IQR for the current hour."),
+    min_coverage_pct: Optional[float] = Query(default=None, ge=0, le=100, description="Drop segments below this coverage."),
 ) -> ItemsResponse[ReliabilityRankingRow]:
     config = get_config()
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
@@ -78,12 +154,25 @@ def reliability_rankings(
                 return ItemsResponse(
                     items=[],
                     reason=EmptyReason(
-                        code="materialized_empty",
+                        code=ReasonCode.MATERIALIZED_EMPTY,
                         message="Materialized rankings exist but are empty.",
                         suggestion="Re-run scripts/materialize_defaults.py after building datasets.",
                     ),
                 )
             df = df.sort_values("rank").head(int(limit)).reset_index(drop=True)
+            if include_quality or min_coverage_pct is not None:
+                q = _load_segment_quality(config.paths.cache_dir, minutes=granularity_minutes, window_hours=window_hours)
+                if not q.empty:
+                    df = df.merge(q, on="segment_id", how="left")
+            if include_baseline:
+                base = _baseline_for_timestamp(
+                    _load_baselines(config.paths.cache_dir, minutes=granularity_minutes),
+                    ts=datetime.now(timezone.utc),
+                )
+                if not base.empty:
+                    df = df.merge(base, on="segment_id", how="left")
+            if min_coverage_pct is not None and "coverage_pct" in df.columns:
+                df = df[pd.to_numeric(df["coverage_pct"], errors="coerce") >= float(min_coverage_pct)]
             df = df.astype(object).where(pd.notnull(df), None)
             return ItemsResponse(items=[ReliabilityRankingRow(**record) for record in df.to_dict(orient="records")])
 
@@ -130,7 +219,7 @@ def reliability_rankings(
                 return ItemsResponse(
                     items=[],
                     reason=EmptyReason(
-                        code="no_observations",
+                        code=ReasonCode.NO_OBSERVATIONS,
                         message="No observations found for the default time window.",
                         suggestion="Run ingestion/build_dataset and try a wider time window.",
                     ),
@@ -174,7 +263,7 @@ def reliability_rankings(
             return ItemsResponse(
                 items=[],
                 reason=EmptyReason(
-                    code="no_observations",
+                    code=ReasonCode.NO_OBSERVATIONS,
                     message="No observations found for this time window.",
                     suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
                 ),
@@ -188,7 +277,7 @@ def reliability_rankings(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_observations",
+                code=ReasonCode.NO_OBSERVATIONS,
                 message="No observations found for this time window.",
                 suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
             ),
@@ -199,11 +288,29 @@ def reliability_rankings(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_rankings",
+                code=ReasonCode.NO_RANKINGS,
                 message="No segments met the ranking criteria for this time window.",
                 suggestion="Try lowering min_samples or using a wider time window.",
             ),
         )
+
+    if include_quality or min_coverage_pct is not None:
+        q = _load_segment_quality(
+            config.paths.cache_dir,
+            minutes=granularity_minutes,
+            window_hours=int(config.analytics.reliability.default_window_hours),
+        )
+        if not q.empty:
+            rankings = rankings.merge(q, on="segment_id", how="left")
+    if include_baseline:
+        base = _baseline_for_timestamp(
+            _load_baselines(config.paths.cache_dir, minutes=granularity_minutes),
+            ts=end_dt if end_dt is not None else datetime.now(timezone.utc),
+        )
+        if not base.empty:
+            rankings = rankings.merge(base, on="segment_id", how="left")
+    if min_coverage_pct is not None and "coverage_pct" in rankings.columns:
+        rankings = rankings[pd.to_numeric(rankings["coverage_pct"], errors="coerce") >= float(min_coverage_pct)]
 
     rankings = rankings.astype(object).where(pd.notnull(rankings), None)
     return ItemsResponse(items=[ReliabilityRankingRow(**record) for record in rankings.to_dict(orient="records")])

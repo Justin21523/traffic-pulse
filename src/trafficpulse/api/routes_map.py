@@ -12,7 +12,7 @@ from trafficpulse.analytics.reliability import (
     compute_reliability_metrics,
     reliability_spec_from_config,
 )
-from trafficpulse.api.schemas import EmptyReason, ItemsResponse
+from trafficpulse.api.schemas import EmptyReason, ItemsResponse, ReasonCode
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
@@ -37,6 +37,87 @@ class SegmentSnapshot(BaseModel):
     mean_speed_kph: Optional[float] = None
     speed_std_kph: Optional[float] = None
     congestion_frequency: Optional[float] = None
+    baseline_median_speed_kph: Optional[float] = None
+    baseline_iqr_speed_kph: Optional[float] = None
+    relative_drop_pct: Optional[float] = None
+    coverage_pct: Optional[float] = None
+    speed_missing_pct: Optional[float] = None
+    quality_expected_points: Optional[int] = None
+
+
+def _load_segment_quality(cache_dir: Path, *, minutes: int, window_hours: int) -> pd.DataFrame:
+    path = cache_dir / f"segment_quality_{int(minutes)}m_{int(window_hours)}h.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = load_csv(path)
+    except Exception:
+        return pd.DataFrame()
+    if df.empty or "segment_id" not in df.columns:
+        return pd.DataFrame()
+    df = df.copy()
+    df["segment_id"] = df["segment_id"].astype(str)
+    for col in ["coverage_pct", "speed_missing_pct"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "expected_points" in df.columns:
+        df["expected_points"] = pd.to_numeric(df["expected_points"], errors="coerce")
+    keep = [c for c in ["segment_id", "coverage_pct", "speed_missing_pct", "expected_points"] if c in df.columns]
+    df = df[keep].drop_duplicates(subset=["segment_id"], keep="last")
+    return df
+
+
+def _load_baselines(cache_dir: Path, *, minutes: int) -> pd.DataFrame:
+    preferred = cache_dir / f"baselines_speed_{int(minutes)}m_7d.csv"
+    candidates: list[Path] = []
+    if preferred.exists():
+        candidates = [preferred]
+    else:
+        try:
+            candidates = sorted(
+                cache_dir.glob(f"baselines_speed_{int(minutes)}m_*.csv"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except Exception:
+            candidates = []
+    if not candidates:
+        return pd.DataFrame()
+    try:
+        df = load_csv(candidates[0])
+    except Exception:
+        return pd.DataFrame()
+    if df.empty or "segment_id" not in df.columns:
+        return pd.DataFrame()
+    df = df.copy()
+    df["segment_id"] = df["segment_id"].astype(str)
+    for col in ["weekday", "hour", "median_speed_kph", "iqr_speed_kph"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _baseline_for_timestamp(df: pd.DataFrame, *, ts: datetime) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    weekday = int(ts.weekday())
+    hour = int(ts.hour)
+    out = df
+    if "weekday" in out.columns:
+        out = out[out["weekday"].fillna(-1).astype(int) == weekday]
+    if "hour" in out.columns:
+        out = out[out["hour"].fillna(-1).astype(int) == hour]
+    if out.empty:
+        return pd.DataFrame()
+    keep = [c for c in ["segment_id", "median_speed_kph", "iqr_speed_kph"] if c in out.columns]
+    out = out[keep].drop_duplicates(subset=["segment_id"], keep="last")
+    out = out.rename(
+        columns={
+            "median_speed_kph": "baseline_median_speed_kph",
+            "iqr_speed_kph": "baseline_iqr_speed_kph",
+        }
+    )
+    return out
 
 
 def _parse_bbox(bbox: str) -> tuple[float, float, float, float]:
@@ -66,6 +147,9 @@ def get_map_snapshot(
     weight_mean_speed: Optional[float] = Query(default=None, ge=0),
     weight_speed_std: Optional[float] = Query(default=None, ge=0),
     weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
+    include_baseline: bool = Query(default=False, description="Include baseline median/IQR for the current hour."),
+    include_quality: bool = Query(default=False, description="Include segment quality (coverage/missing rates)."),
+    min_coverage_pct: Optional[float] = Query(default=None, ge=0, le=100, description="Drop segments below this coverage."),
 ) -> ItemsResponse[SegmentSnapshot]:
     config = get_config()
     processed_dir = config.paths.processed_dir
@@ -92,7 +176,7 @@ def get_map_snapshot(
                 return ItemsResponse(
                     items=[],
                     reason=EmptyReason(
-                        code="materialized_empty",
+                        code=ReasonCode.MATERIALIZED_EMPTY,
                         message="Materialized snapshot exists but is empty.",
                         suggestion="Re-run scripts/materialize_defaults.py after building datasets.",
                     ),
@@ -120,7 +204,7 @@ def get_map_snapshot(
                 return ItemsResponse(
                     items=[],
                     reason=EmptyReason(
-                        code="materialized_no_matches",
+                        code=ReasonCode.MATERIALIZED_NO_MATCHES,
                         message="Materialized snapshot has no rows for the current filters.",
                         suggestion="Try zooming out or removing city/bbox filters.",
                     ),
@@ -129,8 +213,42 @@ def get_map_snapshot(
             df = df.sort_values("segment_id").head(int(limit)).reset_index(drop=True)
             df = df.astype(object).where(pd.notnull(df), None)
             df["n_samples"] = pd.to_numeric(df.get("n_samples"), errors="coerce").fillna(0).astype(int)
-            keep = ["segment_id", "lat", "lon", "n_samples", "mean_speed_kph", "speed_std_kph", "congestion_frequency"]
-            df = df[[c for c in keep if c in df.columns]]
+            if include_quality or min_coverage_pct is not None:
+                q = _load_segment_quality(
+                    config.paths.cache_dir,
+                    minutes=mat_minutes,
+                    window_hours=int(config.analytics.reliability.default_window_hours),
+                )
+                if not q.empty:
+                    df = df.merge(q, on="segment_id", how="left")
+                    df = df.rename(columns={"expected_points": "quality_expected_points"})
+            if include_baseline:
+                baselines = _load_baselines(config.paths.cache_dir, minutes=mat_minutes)
+                base = _baseline_for_timestamp(baselines, ts=datetime.now(timezone.utc))
+                if not base.empty:
+                    df = df.merge(base, on="segment_id", how="left")
+            if include_baseline and "mean_speed_kph" in df.columns and "baseline_median_speed_kph" in df.columns:
+                mean = pd.to_numeric(df["mean_speed_kph"], errors="coerce")
+                base = pd.to_numeric(df["baseline_median_speed_kph"], errors="coerce")
+                df["relative_drop_pct"] = ((base - mean) / base.replace(0, pd.NA)) * 100.0
+            if min_coverage_pct is not None and "coverage_pct" in df.columns:
+                df = df[pd.to_numeric(df["coverage_pct"], errors="coerce") >= float(min_coverage_pct)]
+            keep = [
+                "segment_id",
+                "lat",
+                "lon",
+                "n_samples",
+                "mean_speed_kph",
+                "speed_std_kph",
+                "congestion_frequency",
+                "baseline_median_speed_kph",
+                "baseline_iqr_speed_kph",
+                "relative_drop_pct",
+                "coverage_pct",
+                "speed_missing_pct",
+                "quality_expected_points",
+            ]
+            df = df[[c for c in keep if c in df.columns]].astype(object).where(pd.notnull(df), None)
             return ItemsResponse(items=[SegmentSnapshot(**record) for record in df.to_dict(orient="records")])
 
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
@@ -179,7 +297,7 @@ def get_map_snapshot(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_segments",
+                code=ReasonCode.NO_SEGMENTS,
                 message="No segments found in the selected area.",
                 suggestion="Try zooming out, removing bbox/city filters, or checking the segments dataset.",
             ),
@@ -210,7 +328,14 @@ def get_map_snapshot(
         ]
 
     if segments.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code=ReasonCode.NO_SEGMENTS,
+                message="No segments found in the selected area.",
+                suggestion="Try zooming out, removing bbox/city filters, or checking the segments dataset.",
+            ),
+        )
 
     start_dt: Optional[datetime] = parse_datetime(start) if start else None
     end_dt: Optional[datetime] = parse_datetime(end) if end else None
@@ -263,7 +388,7 @@ def get_map_snapshot(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_observations",
+                code=ReasonCode.NO_OBSERVATIONS,
                 message="No observations found for this time window.",
                 suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
             ),
@@ -278,7 +403,7 @@ def get_map_snapshot(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_observations_for_segments",
+                code=ReasonCode.NO_OBSERVATIONS_FOR_SEGMENTS,
                 message="No observations remain after filtering to segments in the selected area.",
                 suggestion="Try zooming out, removing bbox/city filters, or using a wider time window.",
             ),
@@ -290,7 +415,7 @@ def get_map_snapshot(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_valid_timestamps",
+                code=ReasonCode.NO_VALID_TIMESTAMPS,
                 message="No valid timestamps found in observations for this window.",
                 suggestion="Check the observations dataset timestamp column and preprocessing steps.",
             ),
@@ -317,7 +442,7 @@ def get_map_snapshot(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_metrics",
+                code=ReasonCode.NO_METRICS,
                 message="No hotspot metrics could be computed for this time window.",
                 suggestion="Try lowering min_samples or using a wider time window.",
             ),
@@ -328,7 +453,7 @@ def get_map_snapshot(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_segments_after_merge",
+                code=ReasonCode.NO_SEGMENTS_AFTER_MERGE,
                 message="No segments matched the computed metrics.",
                 suggestion="Try zooming out or using a wider time window.",
             ),
@@ -339,7 +464,7 @@ def get_map_snapshot(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_samples",
+                code=ReasonCode.NO_SAMPLES,
                 message="No segments have any samples in this time window.",
                 suggestion="Try using a wider time window or confirming ingestion is running.",
             ),
@@ -349,6 +474,29 @@ def get_map_snapshot(
     merged = merged.astype(object).where(pd.notnull(merged), None)
     merged["n_samples"] = pd.to_numeric(merged.get("n_samples"), errors="coerce").fillna(0).astype(int)
 
+    if include_quality or min_coverage_pct is not None:
+        q = _load_segment_quality(
+            config.paths.cache_dir,
+            minutes=granularity_minutes,
+            window_hours=int(config.analytics.reliability.default_window_hours),
+        )
+        if not q.empty:
+            merged = merged.merge(q, on="segment_id", how="left")
+            merged = merged.rename(columns={"expected_points": "quality_expected_points"})
+    if include_baseline:
+        baselines = _load_baselines(config.paths.cache_dir, minutes=granularity_minutes)
+        ts_ref = end_dt if end_dt is not None else datetime.now(timezone.utc)
+        base = _baseline_for_timestamp(baselines, ts=ts_ref)
+        if not base.empty:
+            merged = merged.merge(base, on="segment_id", how="left")
+    if include_baseline and "mean_speed_kph" in merged.columns and "baseline_median_speed_kph" in merged.columns:
+        mean = pd.to_numeric(merged["mean_speed_kph"], errors="coerce")
+        base = pd.to_numeric(merged["baseline_median_speed_kph"], errors="coerce")
+        merged["relative_drop_pct"] = ((base - mean) / base.replace(0, pd.NA)) * 100.0
+    if min_coverage_pct is not None and "coverage_pct" in merged.columns:
+        merged = merged[pd.to_numeric(merged["coverage_pct"], errors="coerce") >= float(min_coverage_pct)]
+
+    merged = merged.astype(object).where(pd.notnull(merged), None)
     return ItemsResponse(items=[SegmentSnapshot(**record) for record in merged.to_dict(orient="records")])
 
 
