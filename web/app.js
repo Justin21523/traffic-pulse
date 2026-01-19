@@ -203,6 +203,156 @@ const hotspotsLayer = L.layerGroup().addTo(map);
 
 let uiDefaults = null;
 let uiState = loadUiState();
+let suppressUrlSync = false;
+let urlSyncTimer = null;
+let pendingUrlSelection = null;
+let urlOverrides = null;
+
+function scheduleUrlSync() {
+  if (suppressUrlSync) return;
+  if (urlSyncTimer) window.clearTimeout(urlSyncTimer);
+  urlSyncTimer = window.setTimeout(() => {
+    urlSyncTimer = null;
+    syncUrlFromUi();
+  }, 120);
+}
+
+function parseBoolParam(value) {
+  if (value == null) return null;
+  const v = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(v)) return true;
+  if (["0", "false", "no", "n", "off"].includes(v)) return false;
+  return null;
+}
+
+function parseNumberParam(value) {
+  if (value == null) return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function applyUrlStateOverrides() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.size) return;
+
+  urlOverrides = {
+    theme: params.get("theme"),
+    minutes: params.get("minutes"),
+    follow_latest: parseBoolParam(params.get("follow_latest")),
+    window_h: parseNumberParam(params.get("window_h")),
+    start: params.get("start"),
+    end: params.get("end"),
+    hotspot_metric: params.get("hotspot_metric"),
+    ranking_type: params.get("ranking_type"),
+    ranking_limit: params.get("ranking_limit"),
+    ranking_sort: params.get("ranking_sort"),
+    min_samples: parseNumberParam(params.get("min_samples")),
+    threshold_kph: parseNumberParam(params.get("threshold_kph")),
+    entity: params.get("entity"),
+    segment_id: params.get("segment_id"),
+    corridor_id: params.get("corridor_id"),
+  };
+
+  const theme = urlOverrides.theme;
+  if (theme) {
+    uiState.layout = uiState.layout || {};
+    uiState.layout.theme = theme === "policy" ? "policy" : "product";
+  }
+
+  if (urlOverrides.follow_latest != null) {
+    uiState.timeseries = uiState.timeseries || {};
+    uiState.timeseries.followLatest = urlOverrides.follow_latest;
+  }
+
+  if (urlOverrides.window_h != null) {
+    uiState.timeseries = uiState.timeseries || {};
+    uiState.timeseries.liveWindowHours = Math.round(clamp(urlOverrides.window_h, 1, 168));
+  }
+
+  const minSamples = urlOverrides.min_samples;
+  const threshold = urlOverrides.threshold_kph;
+  if (minSamples != null || threshold != null) {
+    uiState.overrides = uiState.overrides || {};
+    uiState.overrides.reliability = uiState.overrides.reliability || {};
+    if (minSamples != null) uiState.overrides.reliability.min_samples = Math.max(1, Math.trunc(minSamples));
+    if (threshold != null) uiState.overrides.reliability.congestion_speed_threshold_kph = Math.max(1, threshold);
+  }
+
+  const entity = urlOverrides.entity;
+  if (entity === "corridor" && urlOverrides.corridor_id) {
+    pendingUrlSelection = { type: "corridor", id: urlOverrides.corridor_id };
+  } else if (urlOverrides.segment_id) {
+    pendingUrlSelection = { type: "segment", id: urlOverrides.segment_id };
+  }
+}
+
+function applyUrlOverridesToForm() {
+  if (!urlOverrides) return;
+  suppressUrlSync = true;
+  try {
+    if (minutesEl && urlOverrides.minutes) minutesEl.value = String(urlOverrides.minutes);
+
+    if (followLatestEl && urlOverrides.follow_latest != null) followLatestEl.checked = urlOverrides.follow_latest;
+    if (liveWindowHoursEl && urlOverrides.window_h != null)
+      liveWindowHoursEl.value = String(Math.round(clamp(urlOverrides.window_h, 1, 168)));
+
+    if (startEl && endEl && urlOverrides.start && urlOverrides.end) {
+      const startDt = new Date(urlOverrides.start);
+      const endDt = new Date(urlOverrides.end);
+      if (Number.isFinite(startDt.getTime()) && Number.isFinite(endDt.getTime()) && endDt > startDt) {
+        startEl.value = toLocalInputValue(startDt);
+        endEl.value = toLocalInputValue(endDt);
+        if (followLatestEl) followLatestEl.checked = false;
+      }
+    }
+
+    if (hotspotMetricEl && urlOverrides.hotspot_metric) hotspotMetricEl.value = String(urlOverrides.hotspot_metric);
+    if (rankingTypeEl && urlOverrides.ranking_type) rankingTypeEl.value = String(urlOverrides.ranking_type);
+    if (rankingLimitEl && urlOverrides.ranking_limit) rankingLimitEl.value = String(urlOverrides.ranking_limit);
+    if (rankingSortEl && urlOverrides.ranking_sort) rankingSortEl.value = String(urlOverrides.ranking_sort);
+  } finally {
+    suppressUrlSync = false;
+  }
+}
+
+function syncUrlFromUi() {
+  const params = new URLSearchParams();
+
+  const theme = String(getNested(uiState, "layout.theme", "product"));
+  if (theme && theme !== "product") params.set("theme", theme);
+
+  if (entityTypeEl && entityTypeEl.value) params.set("entity", entityTypeEl.value);
+  if (selectedSegmentId) params.set("segment_id", String(selectedSegmentId));
+  if (selectedCorridorId) params.set("corridor_id", String(selectedCorridorId));
+
+  if (minutesEl && minutesEl.value) params.set("minutes", String(minutesEl.value));
+
+  if (followLatestEl && followLatestEl.checked) params.set("follow_latest", "1");
+  if (liveWindowHoursEl && followLatestEl && followLatestEl.checked && liveWindowHoursEl.value) {
+    params.set("window_h", String(liveWindowHoursEl.value));
+  }
+
+  const range = getIsoRange();
+  if (range && (!followLatestEl || !followLatestEl.checked)) {
+    params.set("start", range.start);
+    params.set("end", range.end);
+  }
+
+  if (hotspotMetricEl && hotspotMetricEl.value) params.set("hotspot_metric", String(hotspotMetricEl.value));
+  if (rankingTypeEl && rankingTypeEl.value) params.set("ranking_type", String(rankingTypeEl.value));
+  if (rankingLimitEl && rankingLimitEl.value) params.set("ranking_limit", String(rankingLimitEl.value));
+  if (rankingSortEl && rankingSortEl.value) params.set("ranking_sort", String(rankingSortEl.value));
+
+  const minSamples = reliabilityMinSamplesEl ? parseIntValue(reliabilityMinSamplesEl.value) : null;
+  if (minSamples != null) params.set("min_samples", String(minSamples));
+  const threshold = reliabilityThresholdEl ? parseNumberValue(reliabilityThresholdEl.value) : null;
+  if (threshold != null) params.set("threshold_kph", String(threshold));
+
+  const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}`;
+  window.history.replaceState({}, "", next);
+}
+
+applyUrlStateOverrides();
 
 let showAnomalies = getNested(uiState, "overlays.anomalies", true);
 let showHotspots = getNested(uiState, "overlays.hotspots", true);
@@ -235,6 +385,15 @@ let lastEventImpact = null;
 
 let lastTimeseries = { entity: null, range: null, minutes: null, points: [], anomalies: null };
 let lastEventsClearedReason = null;
+let lastHotspotsReason = null;
+let lastRankingsReason = null;
+let lastEventsReason = null;
+let lastUiStatus = null;
+let lastUiStatusPrev = null;
+let uiStatusStream = null;
+let uiStatusStreamRetryMs = 800;
+let freshnessTicker = null;
+let lastLiveRefreshAtMs = 0;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -259,45 +418,131 @@ function formatAge(seconds) {
   return `${(seconds / 3600).toFixed(1)}h ago`;
 }
 
+function updateFreshnessDisplay() {
+  if (!freshnessPillEl) return;
+  const minutes = Array.isArray(latestObservationMinutes) ? latestObservationMinutes : [];
+  const lastMs = latestObservationMs;
+  if (lastMs == null) {
+    setFreshness({
+      label: latestObservationIso ? "Unknown" : "No data",
+      detail: latestObservationIso
+        ? `Last timestamp: ${String(latestObservationIso)} (minutes: ${minutes.join(", ") || "?"})`
+        : `No observations found. Built minutes: ${minutes.join(", ") || "none"}`,
+      level: "bad",
+    });
+    return;
+  }
+
+  const nowMs = Date.now();
+  const ageSeconds = Math.max(0, (nowMs - lastMs) / 1000);
+  const level = ageSeconds <= 5 * 60 ? "good" : ageSeconds <= 60 * 60 ? "warn" : "bad";
+  setFreshness({
+    label: "Observations",
+    detail: `${formatAge(ageSeconds)} • last=${new Date(lastMs).toISOString()} • minutes=${minutes.join(", ")}`,
+    level,
+  });
+}
+
+function startFreshnessTicker() {
+  if (freshnessTicker) window.clearInterval(freshnessTicker);
+  freshnessTicker = window.setInterval(() => updateFreshnessDisplay(), 1000);
+}
+
+function applyUiStatus(status) {
+  if (!status || typeof status !== "object") return;
+  lastUiStatusPrev = lastUiStatus;
+  lastUiStatus = status;
+  const last = status.observations_last_timestamp_utc;
+  const minutes = status.observations_minutes_available || [];
+  latestObservationIso = last || null;
+  latestObservationMinutes = Array.isArray(minutes) ? minutes : [];
+  latestObservationMs = last ? parseIsoToMs(last) : null;
+  updateFreshnessDisplay();
+
+  applyFollowLatestWindow();
+
+  const config = getLiveConfigFromState();
+  if (!config.enabled) return;
+  if (!last) return;
+
+  const nowMs = Date.now();
+  const minIntervalMs = clamp(Number(config.intervalSeconds) || 60, 5, 3600) * 1000;
+  if (nowMs - lastLiveRefreshAtMs < minIntervalMs) return;
+
+  // Only refresh expensive views when the dataset version changed.
+  const prevVersion = lastUiStatusPrev?.dataset_version || null;
+  const nextVersion = status.dataset_version || null;
+  if (prevVersion != null && nextVersion != null && prevVersion === nextVersion) return;
+  if (prevVersion == null && nextVersion == null) {
+    const prevMs = lastUiStatusPrev?.observations_last_timestamp_utc
+      ? parseIsoToMs(lastUiStatusPrev.observations_last_timestamp_utc)
+      : null;
+    if (prevMs != null && latestObservationMs != null && prevMs === latestObservationMs) return;
+  }
+
+  lastLiveRefreshAtMs = nowMs;
+  refreshLiveNow({ silent: true, skipStatus: true });
+}
+
 async function refreshUiStatus() {
   if (!freshnessPillEl) return;
   try {
     const status = await fetchJson(`${API_BASE}/ui/status`);
-    const last = status.observations_last_timestamp_utc;
-    const minutes = status.observations_minutes_available || [];
-    latestObservationIso = last || null;
-    latestObservationMinutes = Array.isArray(minutes) ? minutes : [];
-    if (!last) {
-      setFreshness({
-        label: "No data",
-        detail: `No observations found. Built minutes: ${minutes.join(", ") || "none"}`,
-        level: "bad",
-      });
-      return;
-    }
-
-    const lastMs = parseIsoToMs(last);
-    latestObservationMs = lastMs;
-    const nowMs = Date.now();
-    if (lastMs == null) {
-      setFreshness({
-        label: "Unknown",
-        detail: `Last timestamp: ${String(last)} (minutes: ${minutes.join(", ") || "?"})`,
-        level: "warn",
-      });
-      return;
-    }
-
-    const ageSeconds = Math.max(0, (nowMs - lastMs) / 1000);
-    const level = ageSeconds <= 5 * 60 ? "good" : ageSeconds <= 60 * 60 ? "warn" : "bad";
-    setFreshness({
-      label: "Observations",
-      detail: `${formatAge(ageSeconds)} • last=${new Date(lastMs).toISOString()} • minutes=${minutes.join(", ")}`,
-      level,
-    });
+    applyUiStatus(status);
   } catch (err) {
     setFreshness({ label: "Error", detail: `Failed to load /ui/status: ${err.message}`, level: "bad" });
   }
+}
+
+function isStatusStreamSupported() {
+  return typeof window !== "undefined" && typeof window.EventSource !== "undefined";
+}
+
+function startStatusStream() {
+  if (!isStatusStreamSupported()) return;
+  if (uiStatusStream) return;
+
+  const url = new URL(`${API_BASE}/stream/status`);
+  url.searchParams.set("interval_seconds", "5");
+
+  try {
+    uiStatusStream = new EventSource(url.toString());
+  } catch (err) {
+    uiStatusStream = null;
+    return;
+  }
+
+  uiStatusStream.addEventListener("message", (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      applyUiStatus(data);
+      uiStatusStreamRetryMs = 800;
+    } catch (err) {
+      // ignore parse errors
+    }
+  });
+
+  uiStatusStream.addEventListener("error", () => {
+    try {
+      uiStatusStream?.close();
+    } catch (err) {
+      // ignore
+    }
+    uiStatusStream = null;
+    const delay = clamp(uiStatusStreamRetryMs, 500, 30000);
+    uiStatusStreamRetryMs = Math.min(30000, Math.round(uiStatusStreamRetryMs * 1.6));
+    window.setTimeout(() => startStatusStream(), delay);
+  });
+}
+
+function stopStatusStream() {
+  if (!uiStatusStream) return;
+  try {
+    uiStatusStream.close();
+  } catch (err) {
+    // ignore
+  }
+  uiStatusStream = null;
 }
 
 function setLayerVisible(layer, visible) {
@@ -384,9 +629,10 @@ function updateHotspotsHint({ empty }) {
   const hours = getRangeHours(range);
   const minSamples = getEffectiveMinSamples();
   const parts = [];
+  if (lastHotspotsReason && lastHotspotsReason.message) parts.push(lastHotspotsReason.message);
   if (hours != null) parts.push(`Window: ${hours.toFixed(1)}h`);
   if (minSamples != null) parts.push(`Min samples: ${minSamples}`);
-  parts.push("Try: Set Min samples = 1, or use a wider time window (24h).");
+  parts.push(lastHotspotsReason?.suggestion || "Try: Set Min samples = 1, or use a wider time window (24h).");
   if (hotspotHintTextEl) hotspotHintTextEl.textContent = parts.join(" • ");
   setHintVisible(hotspotHintEl, true);
 }
@@ -402,9 +648,10 @@ function updateRankingsHint({ empty }) {
   const hours = getRangeHours(range);
   const minSamples = getEffectiveMinSamples();
   const parts = [];
+  if (lastRankingsReason && lastRankingsReason.message) parts.push(lastRankingsReason.message);
   if (hours != null) parts.push(`Window: ${hours.toFixed(1)}h`);
   if (minSamples != null) parts.push(`Min samples: ${minSamples}`);
-  parts.push("Try: Set Min samples = 1, or use a wider time window (24h).");
+  parts.push(lastRankingsReason?.suggestion || "Try: Set Min samples = 1, or use a wider time window (24h).");
   if (rankingsHintTextEl) rankingsHintTextEl.textContent = parts.join(" • ");
   setHintVisible(rankingsHintEl, true);
 }
@@ -439,6 +686,7 @@ function initThemeToggle() {
     saveUiState(uiState);
     applyThemeFromState();
     applyThemeToVisuals();
+    scheduleUrlSync();
   });
 }
 
@@ -622,20 +870,31 @@ function startLiveRefresh() {
   stopLiveRefresh();
   const config = getLiveConfigFromState();
   if (!config.enabled) return;
+
+  // Prefer SSE-driven refresh (no polling).
+  if (isStatusStreamSupported()) {
+    startStatusStream();
+    return;
+  }
+
   const safe = clamp(Number.isFinite(config.intervalSeconds) ? config.intervalSeconds : 60, 5, 3600);
   liveTimer = window.setInterval(() => {
     refreshLiveNow({ silent: true });
   }, safe * 1000);
 }
 
-async function refreshLiveNow({ silent } = { silent: false }) {
+async function refreshLiveNow({ silent, skipStatus } = { silent: false, skipStatus: false }) {
   if (!silent) setStatus("Refreshing live views...");
   const prevLatestMs = latestObservationMs;
-  await refreshUiStatus();
+  if (!skipStatus) {
+    await refreshUiStatus();
+  }
+
   applyFollowLatestWindow();
 
-  const latestChanged = prevLatestMs != null && latestObservationMs != null && latestObservationMs !== prevLatestMs;
-  const shouldRefreshViews = !silent || latestChanged || prevLatestMs == null;
+  const latestChanged =
+    !skipStatus && prevLatestMs != null && latestObservationMs != null && latestObservationMs !== prevLatestMs;
+  const shouldRefreshViews = skipStatus ? true : !silent || latestChanged || prevLatestMs == null;
 
   if (!shouldRefreshViews) return;
 
@@ -663,6 +922,8 @@ function initLivePanel() {
 
   applyLiveStateToForm();
   refreshUiStatus();
+  startFreshnessTicker();
+  startStatusStream();
   startLiveRefresh();
 
   liveAutoRefreshEl.addEventListener("change", () => {
@@ -911,6 +1172,7 @@ function applySettingsFromForm({ refresh } = { refresh: true }) {
   persistOverlays();
   applyOverlayVisibility();
   saveUiState(uiState);
+  scheduleUrlSync();
 
   if (refresh) refreshAfterSettings();
 }
@@ -1343,6 +1605,35 @@ async function fetchJson(url) {
   return await resp.json();
 }
 
+function unwrapItemsResponse(data) {
+  if (Array.isArray(data)) return { items: data, reason: null };
+  if (data && typeof data === "object" && Array.isArray(data.items)) {
+    return { items: data.items, reason: data.reason || null };
+  }
+  return {
+    items: [],
+    reason: { code: "invalid_response", message: "Unexpected response shape from API.", suggestion: null },
+  };
+}
+
+async function fetchItems(url) {
+  const resp = await fetch(url, { headers: { accept: "application/json" } });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
+  }
+  const data = await resp.json();
+  const { items, reason } = unwrapItemsResponse(data);
+  return {
+    items,
+    reason,
+    cache: {
+      status: resp.headers.get("x-cache"),
+      ttl: resp.headers.get("x-cache-ttl"),
+    },
+  };
+}
+
 function getIsoRange() {
   const startVal = startEl.value;
   const endVal = endEl.value;
@@ -1379,6 +1670,7 @@ function initTimeseriesFollowLatest() {
     saveUiState(uiState);
     applyTimeseriesStateToForm();
     applyFollowLatestWindow();
+    scheduleUrlSync();
   });
 
   if (liveWindowHoursEl) {
@@ -1389,6 +1681,7 @@ function initTimeseriesFollowLatest() {
       uiState.timeseries.liveWindowHours = Math.round(value);
       saveUiState(uiState);
       applyFollowLatestWindow();
+      scheduleUrlSync();
     });
   }
 }
@@ -1578,6 +1871,7 @@ function renderHotspots(rows, metric) {
 function clearHotspots() {
   hotspotRows = [];
   hotspotsLoaded = false;
+  lastHotspotsReason = null;
   hotspotsLayer.clearLayers();
   updateHotspotLegend(null, null);
   updateHotspotInfo("No hotspots loaded.");
@@ -1608,9 +1902,12 @@ async function loadHotspots() {
   applyReliabilityOverrides(url);
 
   try {
-    hotspotRows = await fetchJson(url.toString());
+    const { items, reason } = await fetchItems(url.toString());
+    hotspotRows = items;
+    lastHotspotsReason = reason;
   } catch (err) {
     hotspotsLoaded = false;
+    lastHotspotsReason = null;
     updateHotspotInfo("Failed to load hotspots. Ensure the API includes /map/snapshot and a dataset is built.");
     setStatus(`Failed to load hotspots: ${err.message}`);
     updateHotspotsHint({ empty: false });
@@ -1954,6 +2251,7 @@ function selectSegment(segmentId, { centerMap } = { centerMap: true }) {
     map.setView(marker.getLatLng(), Math.max(map.getZoom(), 14), { animate: true });
     marker.openPopup();
   }
+  scheduleUrlSync();
 }
 
 function centerMapOnCorridor(corridorId) {
@@ -1999,6 +2297,7 @@ function selectCorridor(corridorId, { centerMap } = { centerMap: false }) {
     centerMapOnCorridor(corridorId);
     setStatus(`Centered on corridor ${corridorId}.`);
   }
+  scheduleUrlSync();
 }
 
 function selectEvent(eventId, { centerMap } = { centerMap: true }) {
@@ -2243,13 +2542,15 @@ async function loadRankings() {
 
   setStatus("Loading rankings...");
   try {
-    const items = await fetchJson(url.toString());
+    const { items, reason } = await fetchItems(url.toString());
     lastRankings = items;
+    lastRankingsReason = reason;
     renderRankings(items, type);
     rankingsLoaded = true;
     setStatus(`Loaded ${items.length} ranking rows.`);
   } catch (err) {
     rankingsLoaded = false;
+    lastRankingsReason = null;
     rankingsEl.textContent = "Failed to load rankings.";
     updateRankingsHint({ empty: false });
     setStatus(`Failed to load rankings: ${err.message}`);
@@ -2364,7 +2665,11 @@ function applyEventsFilters() {
 function renderEvents(items) {
   eventsEl.innerHTML = "";
   if (!items || !items.length) {
-    eventsEl.textContent = "No events returned.";
+    const parts = [];
+    if (lastEventsReason && lastEventsReason.message) parts.push(lastEventsReason.message);
+    parts.push("No events returned.");
+    if (lastEventsReason && lastEventsReason.suggestion) parts.push(lastEventsReason.suggestion);
+    eventsEl.textContent = parts.join("\n");
     return;
   }
 
@@ -2424,7 +2729,9 @@ async function loadEvents() {
   url.searchParams.set("limit", "1000");
 
   try {
-    events = await fetchJson(url.toString());
+    const { items, reason } = await fetchItems(url.toString());
+    events = items;
+    lastEventsReason = reason;
   } catch (err) {
     eventsLoaded = false;
     eventsEl.textContent = "Failed to load events. Run scripts/build_events.py and check ingestion.events config.";
@@ -2449,6 +2756,7 @@ function clearEvents() {
   events = [];
   eventsLoaded = false;
   eventsById = new Map();
+  lastEventsReason = null;
   eventMarkers.clearLayers();
   eventMarkerById.clear();
   impactSegmentsLayer.clearLayers();
@@ -2551,6 +2859,7 @@ corridorSelectEl.addEventListener("change", () => {
   selectCorridor(corridorId);
   loadTimeseries();
 });
+if (entityTypeEl) entityTypeEl.addEventListener("change", scheduleUrlSync);
 loadButton.addEventListener("click", loadTimeseries);
 loadRankingsButton.addEventListener("click", loadRankings);
 loadEventsButton.addEventListener("click", loadEvents);
@@ -2559,8 +2868,21 @@ clearHotspotsButton.addEventListener("click", clearHotspots);
 hotspotMetricEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value));
 if (rankingSearchEl) rankingSearchEl.addEventListener("input", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
 if (rankingSortEl) rankingSortEl.addEventListener("change", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
-if (startEl) startEl.addEventListener("change", () => eventsWithinRangeEl?.checked && applyEventsFilters());
-if (endEl) endEl.addEventListener("change", () => eventsWithinRangeEl?.checked && applyEventsFilters());
+hotspotMetricEl.addEventListener("change", scheduleUrlSync);
+if (minutesEl) minutesEl.addEventListener("change", scheduleUrlSync);
+if (rankingTypeEl) rankingTypeEl.addEventListener("change", scheduleUrlSync);
+if (rankingLimitEl) rankingLimitEl.addEventListener("change", scheduleUrlSync);
+if (rankingSortEl) rankingSortEl.addEventListener("change", scheduleUrlSync);
+if (startEl)
+  startEl.addEventListener("change", () => {
+    if (eventsWithinRangeEl?.checked) applyEventsFilters();
+    scheduleUrlSync();
+  });
+if (endEl)
+  endEl.addEventListener("change", () => {
+    if (eventsWithinRangeEl?.checked) applyEventsFilters();
+    scheduleUrlSync();
+  });
 
 applyLayoutFromState();
 initThemeToggle();
@@ -2579,8 +2901,25 @@ initQuickGuides();
 loadUiDefaultsFromApi().then((defaults) => {
   if (defaults) applyDefaultsToForm(defaults);
   applyStateToForm(uiState);
+  applyUrlOverridesToForm();
+  applyThemeFromState();
+  scheduleUrlSync();
 });
 
 setDefaultTimeRange();
-loadSegments();
-loadCorridors();
+Promise.allSettled([loadSegments(), loadCorridors()]).then(() => {
+  if (pendingUrlSelection && pendingUrlSelection.type === "corridor") {
+    const corridorId = String(pendingUrlSelection.id);
+    if (corridorsById && corridorsById.has(corridorId)) {
+      selectCorridor(corridorId, { centerMap: true });
+      loadTimeseries();
+    }
+  } else if (pendingUrlSelection && pendingUrlSelection.type === "segment") {
+    const segmentId = String(pendingUrlSelection.id);
+    if (segmentsById && segmentsById.has(segmentId)) {
+      selectSegment(segmentId, { centerMap: true });
+      loadTimeseries();
+    }
+  }
+  scheduleUrlSync();
+});
