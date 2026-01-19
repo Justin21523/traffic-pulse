@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Optional
 
 from trafficpulse.ingestion.tdx_traffic_client import TdxTrafficClient
+from trafficpulse.ingestion.ledger import safe_append_ledger_entry
 from trafficpulse.logging_config import configure_logging
+from trafficpulse.quality.observations import clean_observations
 from trafficpulse.settings import AppConfig, get_config
 from trafficpulse.storage.datasets import (
     append_csv,
@@ -45,13 +47,21 @@ class DailyBackfillState:
         )
 
 
-def _write_ingest_status(path: Path, *, ok: bool, updated_files: list[str] | None = None, error: str | None = None) -> None:
+def _write_ingest_status(
+    path: Path,
+    *,
+    ok: bool,
+    updated_files: list[str] | None = None,
+    error: str | None = None,
+    quality: dict[str, int] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "last_ingest_ok": bool(ok),
         "updated_files": updated_files or [],
         "last_error": error,
+        "quality": quality or {},
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -134,6 +144,7 @@ def main() -> None:
 
     state_path = Path(args.state_path)
     ingest_status_path = state_path.parent / "ingest_status.json"
+    ledger_path = state_path.parent / "ingest_ledger.jsonl"
     state = DailyBackfillState.load(state_path)
     if not args.force and state.last_backfill_date == yesterday.strftime("%Y-%m-%d"):
         print(f"[vd-backfill] already backfilled {state.last_backfill_date}; skipping")
@@ -149,16 +160,64 @@ def main() -> None:
             start=yesterday_start, end=today_start, cities=args.cities
         )
     except Exception as exc:
-        _write_ingest_status(ingest_status_path, ok=False, updated_files=[], error=str(exc))
+        _write_ingest_status(ingest_status_path, ok=False, updated_files=[], error=str(exc), quality={})
+        safe_append_ledger_entry(
+            ledger_path,
+            {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "source": "vd",
+                "runner": "daily_backfill",
+                "event": "error",
+                "ok": False,
+                "cities": args.cities or [],
+                "backfill_date": yesterday.strftime("%Y-%m-%d"),
+                "error": str(exc),
+                "updated_files": [],
+            },
+        )
         raise
     finally:
         client.close()
 
     print(f"[vd-backfill] segments rows: {len(segments):,}")
     print(f"[vd-backfill] observations rows: {len(observations):,}")
-    if observations.empty:
+    cleaned, stats = clean_observations(observations)
+    if cleaned.empty:
         print("[vd-backfill] observations empty; not writing state")
-        _write_ingest_status(ingest_status_path, ok=False, updated_files=[], error="empty observations")
+        _write_ingest_status(
+            ingest_status_path,
+            ok=False,
+            updated_files=[],
+            error="empty observations",
+            quality={
+                "input_rows": stats.input_rows,
+                "output_rows": stats.output_rows,
+                "dropped_missing_keys": stats.dropped_missing_keys,
+                "dropped_invalid_timestamp": stats.dropped_invalid_timestamp,
+                "dropped_invalid_speed": stats.dropped_invalid_speed,
+                "dropped_duplicates": stats.dropped_duplicates,
+            },
+        )
+        safe_append_ledger_entry(
+            ledger_path,
+            {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "source": "vd",
+                "runner": "daily_backfill",
+                "event": "empty_observations",
+                "ok": False,
+                "cities": args.cities or [],
+                "backfill_date": yesterday.strftime("%Y-%m-%d"),
+                "error": "empty observations",
+                "input_rows": stats.input_rows,
+                "output_rows": stats.output_rows,
+                "dropped_missing_keys": stats.dropped_missing_keys,
+                "dropped_invalid_timestamp": stats.dropped_invalid_timestamp,
+                "dropped_invalid_speed": stats.dropped_invalid_speed,
+                "dropped_duplicates": stats.dropped_duplicates,
+                "updated_files": [],
+            },
+        )
         return
 
     if args.dry_run:
@@ -166,7 +225,7 @@ def main() -> None:
 
     if not segments.empty:
         save_csv(segments, segments_out)
-    append_csv(observations, observations_out)
+    append_csv(cleaned, observations_out)
 
     state = DailyBackfillState(last_backfill_date=yesterday.strftime("%Y-%m-%d"))
     state.save(state_path)
@@ -175,6 +234,34 @@ def main() -> None:
         ok=True,
         updated_files=[str(segments_out), str(observations_out), str(state_path)],
         error=None,
+        quality={
+            "input_rows": stats.input_rows,
+            "output_rows": stats.output_rows,
+            "dropped_missing_keys": stats.dropped_missing_keys,
+            "dropped_invalid_timestamp": stats.dropped_invalid_timestamp,
+            "dropped_invalid_speed": stats.dropped_invalid_speed,
+            "dropped_duplicates": stats.dropped_duplicates,
+        },
+    )
+    safe_append_ledger_entry(
+        ledger_path,
+        {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "source": "vd",
+            "runner": "daily_backfill",
+            "event": "backfill_written",
+            "ok": True,
+            "cities": args.cities or [],
+            "backfill_date": yesterday.strftime("%Y-%m-%d"),
+            "segments_rows": int(len(segments)),
+            "input_rows": stats.input_rows,
+            "output_rows": stats.output_rows,
+            "dropped_missing_keys": stats.dropped_missing_keys,
+            "dropped_invalid_timestamp": stats.dropped_invalid_timestamp,
+            "dropped_invalid_speed": stats.dropped_invalid_speed,
+            "dropped_duplicates": stats.dropped_duplicates,
+            "updated_files": [str(segments_out), str(observations_out), str(state_path)],
+        },
     )
     print(f"[vd-backfill] done: {state.last_backfill_date} -> {observations_out}")
 

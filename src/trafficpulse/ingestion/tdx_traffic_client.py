@@ -26,10 +26,11 @@ import logging
 import random
 # time provides epoch seconds for backoff sleeps (retry strategy).
 import time
+from collections import deque
 # dataclass gives lightweight, typed "data carriers" for queries without boilerplate.
 from dataclasses import dataclass
 # datetime/timedelta represent time windows and chunk boundaries for API queries.
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 # Any/Optional make type intent explicit for JSON payloads and nullable fields.
 from typing import Any, Optional
 
@@ -227,6 +228,46 @@ class TdxTrafficClient:
         )
         # Track last request time so we can enforce a client-side minimum interval (optional throttle).
         self._last_request_epoch_seconds: Optional[float] = None
+        # Adaptive throttle to survive strict upstream rate limits without crashing the long-running loop.
+        # Starts at the configured min_request_interval_seconds and increases on 429/Retry-After.
+        self._adaptive_min_request_interval_seconds: float = float(
+            getattr(self.config.tdx, "min_request_interval_seconds", 0.0) or 0.0
+        )
+        self._throttle_state_path = self.config.paths.cache_dir / "tdx_throttle_state.json"
+        self._load_throttle_state()
+        # Track recent rate limit behavior for observability (rolling 1-hour window).
+        self._rate_limit_events: deque[tuple[float, float | None]] = deque()
+
+    def _load_throttle_state(self) -> None:
+        base = float(getattr(self.config.tdx, "min_request_interval_seconds", 0.0) or 0.0)
+        path = getattr(self, "_throttle_state_path", None)
+        if not path:
+            return
+        try:
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+            value = data.get("adaptive_min_interval_seconds")
+            if isinstance(value, (int, float)) and value >= 0:
+                self._adaptive_min_request_interval_seconds = max(base, float(value))
+        except Exception:
+            return
+
+    def _save_throttle_state(self) -> None:
+        path = getattr(self, "_throttle_state_path", None)
+        if not path:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "adaptive_min_interval_seconds": float(self._adaptive_min_request_interval_seconds or 0.0),
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            return
 
     def close(self) -> None:
         """Close underlying HTTP clients to release sockets and file descriptors."""
@@ -267,7 +308,8 @@ class TdxTrafficClient:
     def _sleep_throttle(self) -> None:
         """Enforce a minimum delay between requests to reduce 429 risk (optional)."""
 
-        min_interval = float(getattr(self.config.tdx, "min_request_interval_seconds", 0.0) or 0.0)
+        base_min_interval = float(getattr(self.config.tdx, "min_request_interval_seconds", 0.0) or 0.0)
+        min_interval = max(base_min_interval, float(self._adaptive_min_request_interval_seconds or 0.0))
         if min_interval <= 0:
             return
         now = time.time()
@@ -277,6 +319,69 @@ class TdxTrafficClient:
         remaining = min_interval - elapsed
         if remaining > 0:
             time.sleep(remaining)
+
+    def _note_rate_limit(self, *, retry_after_seconds: Optional[float]) -> None:
+        """Increase adaptive throttle when the upstream signals rate limiting."""
+
+        base = float(getattr(self.config.tdx, "min_request_interval_seconds", 0.0) or 0.0)
+        current = float(self._adaptive_min_request_interval_seconds or 0.0)
+        now = time.time()
+        self._rate_limit_events.append((now, float(retry_after_seconds) if retry_after_seconds is not None else None))
+        self._prune_rate_limit_events()
+        # Use Retry-After when provided; otherwise back off aggressively.
+        target = float(retry_after_seconds) if retry_after_seconds is not None else max(1.0, current * 2.0, base)
+        # Clamp so a single burst doesn't stall the pipeline indefinitely.
+        self._adaptive_min_request_interval_seconds = min(120.0, max(current, target))
+        self._save_throttle_state()
+        try:
+            from datetime import datetime, timezone
+
+            from trafficpulse.ingestion.ledger import safe_append_ledger_entry
+
+            safe_append_ledger_entry(
+                self.config.paths.cache_dir / "rate_limit_ledger.jsonl",
+                {
+                    "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "source": "tdx",
+                    "event": "rate_limited",
+                    "status_code": 429,
+                    "retry_after_seconds": float(retry_after_seconds) if retry_after_seconds is not None else None,
+                    "adaptive_min_interval_seconds": float(self._adaptive_min_request_interval_seconds or 0.0),
+                },
+            )
+        except Exception:
+            # Best-effort observability only; never fail the ingestion loop.
+            pass
+
+    def _prune_rate_limit_events(self) -> None:
+        now = time.time()
+        window_start = now - 3600.0
+        while self._rate_limit_events and self._rate_limit_events[0][0] < window_start:
+            self._rate_limit_events.popleft()
+
+    def _note_success(self) -> None:
+        """Slowly relax adaptive throttle after successful requests."""
+
+        base = float(getattr(self.config.tdx, "min_request_interval_seconds", 0.0) or 0.0)
+        current = float(self._adaptive_min_request_interval_seconds or 0.0)
+        if current <= base:
+            self._adaptive_min_request_interval_seconds = base
+            return
+        # Decay ~5% per successful request.
+        self._adaptive_min_request_interval_seconds = max(base, current * 0.95)
+
+    def rate_limit_summary(self) -> dict[str, float | int | None]:
+        """Return 1-hour rolling rate-limit stats for UI/monitoring."""
+
+        self._prune_rate_limit_events()
+        count = int(len(self._rate_limit_events))
+        retry_values = [v for (_, v) in self._rate_limit_events if v is not None]
+        avg_retry_after = float(sum(retry_values) / len(retry_values)) if retry_values else None
+        return {
+            "count_1h": count,
+            "avg_retry_after_seconds_1h": avg_retry_after,
+            "adaptive_min_interval_seconds": float(self._adaptive_min_request_interval_seconds or 0.0),
+        }
 
     def _compute_backoff_seconds(self, attempt: int, retry_after_seconds: Optional[float]) -> float:
         """Compute sleep time for a given retry attempt, honoring Retry-After when configured."""
@@ -342,6 +447,7 @@ class TdxTrafficClient:
                 items = self._extract_items(payload)
                 # Persist successful results so repeated local runs do not re-hit the API.
                 self._cache.set_json("tdx", query.cache_key(), items)
+                self._note_success()
                 return items
             except httpx.HTTPStatusError as exc:
                 # Decide whether this status should be retried, and optionally honor Retry-After.
@@ -362,6 +468,8 @@ class TdxTrafficClient:
                 retry_after_seconds = self._parse_retry_after_seconds(
                     exc.response.headers.get("retry-after")
                 )
+                if status == 429:
+                    self._note_rate_limit(retry_after_seconds=retry_after_seconds)
                 delay = self._compute_backoff_seconds(
                     attempt=attempt, retry_after_seconds=retry_after_seconds
                 )
@@ -420,6 +528,7 @@ class TdxTrafficClient:
                     if isinstance(parsed, dict):
                         items.append(parsed)
                 self._cache.set_json("tdx", query.cache_key(), items)
+                self._note_success()
                 return items
             except httpx.HTTPStatusError as exc:
                 last_error = exc
@@ -437,6 +546,8 @@ class TdxTrafficClient:
                 retry_after_seconds = self._parse_retry_after_seconds(
                     exc.response.headers.get("retry-after")
                 )
+                if status == 429:
+                    self._note_rate_limit(retry_after_seconds=retry_after_seconds)
                 delay = self._compute_backoff_seconds(
                     attempt=attempt, retry_after_seconds=retry_after_seconds
                 )

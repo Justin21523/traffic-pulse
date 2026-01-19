@@ -8,6 +8,7 @@ from pathlib import Path
 
 from trafficpulse.ingestion.tdx_traffic_client import TdxTrafficClient
 from trafficpulse.logging_config import configure_logging
+from trafficpulse.quality.observations import clean_observations
 from trafficpulse.settings import get_config
 from trafficpulse.storage.datasets import (
     observations_parquet_path,
@@ -76,20 +77,26 @@ def main() -> None:
         client.close()
 
     segments_path = save_csv(segments, segments_csv_path(processed_dir))
+    cleaned, stats = clean_observations(observations)
     observations_path = save_csv(
-        observations,
+        cleaned,
         observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes),
     )
 
     print(f"Saved segments: {segments_path}")
     print(f"Saved observations: {observations_path}")
     print(f"Segments rows: {len(segments):,}")
-    print(f"Observation rows: {len(observations):,}")
+    print(f"Observation rows (cleaned): {len(cleaned):,}")
+    print(
+        f"Clean stats: input={stats.input_rows:,} output={stats.output_rows:,} "
+        f"dropped_invalid_speed={stats.dropped_invalid_speed:,} dropped_invalid_timestamp={stats.dropped_invalid_timestamp:,} "
+        f"dropped_duplicates={stats.dropped_duplicates:,}"
+    )
 
     if config.warehouse.enabled:
         segments_parquet = save_parquet(segments, segments_parquet_path(parquet_dir))
         observations_parquet = save_parquet(
-            observations,
+            cleaned,
             observations_parquet_path(parquet_dir, config.preprocessing.source_granularity_minutes),
         )
         print(f"Saved segments (Parquet): {segments_parquet}")

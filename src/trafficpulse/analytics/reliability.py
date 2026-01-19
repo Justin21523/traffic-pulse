@@ -147,6 +147,8 @@ def compute_reliability_metrics(
     df[seg_col] = df[seg_col].astype(str)
     # Drop rows missing keys; they cannot be grouped reliably.
     df = df.dropna(subset=[ts_col, seg_col])
+    # Deduplicate by (segment_id, timestamp) to avoid double-counting when backfill and live data overlap.
+    df = df.drop_duplicates(subset=[seg_col, ts_col], keep="last")
 
     # Apply start bound as inclusive (>=) so the window includes the start timestamp.
     if start is not None:

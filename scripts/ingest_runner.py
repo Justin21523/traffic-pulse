@@ -5,6 +5,9 @@ import _bootstrap  # noqa: F401
 import argparse
 import subprocess
 import sys
+from pathlib import Path
+
+from trafficpulse.settings import get_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,12 +66,33 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Stop live loop after N iterations (default: run forever).",
     )
+    parser.add_argument(
+        "--segments-refresh-hours",
+        type=int,
+        default=24,
+        help="Refresh segments metadata at most once per N hours (default: 24).",
+    )
+    parser.add_argument(
+        "--no-materialize-after",
+        action="store_true",
+        help="Skip scripts/materialize_defaults.py after the runner completes.",
+    )
+    parser.add_argument(
+        "--no-aggregate-after",
+        action="store_true",
+        help="Skip scripts/aggregate_observations.py after the runner completes.",
+    )
     return parser.parse_args()
 
 
 def _run(cmd: list[str]) -> None:
     print("[runner] exec:", " ".join(cmd))
     subprocess.run(cmd, check=True)
+
+
+def _run_optional(cmd: list[str]) -> None:
+    print("[runner] exec (optional):", " ".join(cmd))
+    subprocess.run(cmd, check=False)
 
 
 def main() -> None:
@@ -114,6 +138,8 @@ def main() -> None:
                 str(args.interval_seconds),
                 "--min-request-interval",
                 str(args.min_request_interval),
+                "--segments-refresh-hours",
+                str(args.segments_refresh_hours),
                 *cache_args,
                 *processed_args,
                 "--state-path",
@@ -122,7 +148,21 @@ def main() -> None:
             ]
         )
 
+    if not args.no_aggregate_after:
+        config = get_config()
+        processed_dir = Path(args.processed_dir) if args.processed_dir else config.paths.processed_dir
+        source_minutes = int(config.preprocessing.source_granularity_minutes)
+        target_minutes = int(config.preprocessing.target_granularity_minutes)
+        source_path = processed_dir / f"observations_{source_minutes}min.csv"
+        if source_path.exists():
+            if target_minutes != source_minutes:
+                _run_optional([sys.executable, "scripts/aggregate_observations.py"])
+            if 60 not in {source_minutes, target_minutes}:
+                _run_optional([sys.executable, "scripts/aggregate_observations.py", "--target-minutes", "60"])
+
+    if not args.no_materialize_after:
+        _run([sys.executable, "scripts/materialize_defaults.py"])
+
 
 if __name__ == "__main__":
     main()
-

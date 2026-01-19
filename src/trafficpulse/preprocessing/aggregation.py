@@ -83,6 +83,8 @@ def aggregate_observations(
     df[seg_col] = df[seg_col].astype(str)
     # Drop rows missing essential keys; aggregation cannot place them into a bucket or segment group.
     df = df.dropna(subset=[ts_col, seg_col])
+    # Deduplicate exact timestamped readings per segment to avoid bias from overlap/retries.
+    df = df.drop_duplicates(subset=[seg_col, ts_col], keep="last")
 
     # Coerce requested value columns to numeric so groupby aggregations behave predictably.
     for column in spec.aggregations.keys():
