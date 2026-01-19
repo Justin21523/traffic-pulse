@@ -30,7 +30,16 @@
         </label>
         <div class="topbar-live" title="Live status">
           <span class="topbar-pill" id="live-indicator">Polling</span>
+          <span class="topbar-small mono" id="live-detail">Data: —</span>
+          <span class="topbar-small mono" id="rate-indicator">Rate: —</span>
+          <span class="topbar-small mono" id="trend-indicator">Trend: —</span>
+          <span class="topbar-small mono" id="weather-indicator">Weather: —</span>
           <span class="topbar-small mono" id="cache-indicator">Cache: —</span>
+        </div>
+        <div class="topbar-links" title="Quick diagnostics">
+          <a class="topbar-link mono" id="link-quality" href="#" target="_blank" rel="noreferrer">Quality</a>
+          <a class="topbar-link mono" id="link-diagnostics" href="#" target="_blank" rel="noreferrer">Diagnostics</a>
+          <a class="topbar-link mono" id="link-alerts" href="#" target="_blank" rel="noreferrer">Alerts</a>
         </div>
         <button class="topbar-button secondary" id="copy-link" type="button" title="Copy a shareable dashboard link">
           Copy link

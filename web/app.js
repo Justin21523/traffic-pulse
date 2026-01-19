@@ -12,9 +12,16 @@ const statusEl = document.getElementById("status");
 const apiBaseEl = document.getElementById("api-base");
 const themeSelectEl = document.getElementById("theme-select");
 const liveIndicatorEl = document.getElementById("live-indicator");
+const liveDetailEl = document.getElementById("live-detail");
+const rateIndicatorEl = document.getElementById("rate-indicator");
+const trendIndicatorEl = document.getElementById("trend-indicator");
+const weatherIndicatorEl = document.getElementById("weather-indicator");
 const cacheIndicatorEl = document.getElementById("cache-indicator");
 const copyLinkButton = document.getElementById("copy-link");
 const exportSnapshotButton = document.getElementById("export-snapshot");
+const qualityLinkEl = document.getElementById("link-quality");
+const diagnosticsLinkEl = document.getElementById("link-diagnostics");
+const alertsLinkEl = document.getElementById("link-alerts");
 
 const dataHealthTextEl = document.getElementById("data-health-text");
 const dataHealthRefreshButton = document.getElementById("data-health-refresh");
@@ -129,6 +136,9 @@ const closeShortcutsButton = document.getElementById("close-shortcuts");
 const chartEl = document.getElementById("chart");
 
 apiBaseEl.textContent = API_BASE;
+if (qualityLinkEl) qualityLinkEl.href = `${API_BASE}/ui/quality`;
+if (diagnosticsLinkEl) diagnosticsLinkEl.href = `${API_BASE}/ui/diagnostics`;
+if (alertsLinkEl) alertsLinkEl.href = `${API_BASE}/ui/alerts?tail=400`;
 
 const UI_STORAGE_KEY = "trafficpulse.ui.v1";
 
@@ -220,6 +230,7 @@ const markers = L.layerGroup().addTo(map);
 const eventMarkers = L.layerGroup().addTo(map);
 const impactSegmentsLayer = L.layerGroup().addTo(map);
 const hotspotsLayer = L.layerGroup().addTo(map);
+const linkedHotspotsLayer = L.layerGroup().addTo(map);
 
 let uiDefaults = null;
 let uiState = loadUiState();
@@ -420,11 +431,16 @@ let lastLiveRefreshAtMs = 0;
 let lastCacheInfo = { hotspots: null, rankings: null, events: null };
 let lastSseState = { mode: "polling", detail: "Polling" };
 let hotspotMarkerBySegmentId = new Map();
+let lastTrends = null;
+let trendsRefreshTimer = null;
+let weatherRefreshTimer = null;
 
 let timeseriesAbortController = null;
 let anomaliesAbortController = null;
 let impactAbortController = null;
 let impactCache = new Map();
+let linksAbortController = null;
+let lastEventLinksInfo = null;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -446,6 +462,38 @@ function setLiveIndicator({ mode, detail }) {
   liveIndicatorEl.textContent = lastSseState.detail;
 }
 
+function computeHealthLevel(status) {
+  if (!status || typeof status !== "object") return { level: "bad", label: "DOWN" };
+
+  if (status.last_ingest_ok === false) return { level: "bad", label: "DOWN" };
+  const failures = typeof status.ingest_consecutive_failures === "number" ? status.ingest_consecutive_failures : 0;
+  if (failures > 0) return { level: "warn", label: "WARN" };
+
+  const lastMs = status.observations_last_timestamp_utc ? parseIsoToMs(status.observations_last_timestamp_utc) : null;
+  if (lastMs == null) return { level: "bad", label: "NO DATA" };
+
+  const ageSeconds = Math.max(0, (Date.now() - lastMs) / 1000);
+  if (ageSeconds > 4 * 60 * 60) return { level: "bad", label: "STALE" };
+  if (ageSeconds > 60 * 60) return { level: "warn", label: "STALE" };
+
+  const rl = status.ingest_rate_limit;
+  const count = rl && typeof rl.count_1h === "number" ? rl.count_1h : 0;
+  if (count >= 30) return { level: "warn", label: "THROTTLED" };
+  return { level: "good", label: "OK" };
+}
+
+function applyHealthBadge(status) {
+  if (!liveIndicatorEl) return;
+  liveIndicatorEl.classList.remove("health-good", "health-warn", "health-bad");
+  const health = computeHealthLevel(status);
+  liveIndicatorEl.classList.add(`health-${health.level}`);
+
+  const mode = lastSseState?.mode || "polling";
+  const prefix = mode === "connected" ? "LIVE" : mode === "reconnecting" ? "RETRY" : mode === "offline" ? "OFFLINE" : "POLL";
+  liveIndicatorEl.textContent = `${prefix} ${health.label}`;
+  liveIndicatorEl.title = `${prefix} ${health.label}`;
+}
+
 function formatCacheBadge(entry) {
   if (!entry || !entry.status) return "—";
   const ttl = entry.ttl != null && entry.ttl !== "" ? `${entry.ttl}s` : "";
@@ -459,6 +507,105 @@ function updateCacheIndicator() {
   const r = formatCacheBadge(lastCacheInfo.rankings);
   const e = formatCacheBadge(lastCacheInfo.events);
   cacheIndicatorEl.textContent = `Cache · H:${h} R:${r} E:${e}`;
+}
+
+function formatRateLimitSummary(summary) {
+  if (!summary || typeof summary !== "object") return "—";
+  const count = typeof summary.count_1h === "number" ? summary.count_1h : null;
+  const avg = typeof summary.avg_retry_after_seconds_1h === "number" ? summary.avg_retry_after_seconds_1h : null;
+  const interval = typeof summary.adaptive_min_interval_seconds === "number" ? summary.adaptive_min_interval_seconds : null;
+  const parts = [];
+  if (count != null) parts.push(`429_1h:${Math.round(count)}`);
+  if (avg != null) parts.push(`avgRA:${avg.toFixed(1)}s`);
+  if (interval != null) parts.push(`throttle:${interval.toFixed(1)}s`);
+  return parts.length ? parts.join(" ") : "—";
+}
+
+function updateTopbarDetail(status) {
+  if (!liveDetailEl) return;
+  const last = status && status.observations_last_timestamp_utc ? parseIsoToMs(status.observations_last_timestamp_utc) : null;
+  const failures = status && typeof status.ingest_consecutive_failures === "number" ? status.ingest_consecutive_failures : null;
+  const backoff = status && typeof status.ingest_backoff_seconds === "number" ? status.ingest_backoff_seconds : null;
+  const ok = status && typeof status.last_ingest_ok === "boolean" ? status.last_ingest_ok : null;
+
+  if (last == null) {
+    liveDetailEl.textContent = "Data: —";
+    return;
+  }
+
+  const ageSeconds = Math.max(0, (Date.now() - last) / 1000);
+  const bits = [`Data:${formatAge(ageSeconds)}`];
+  if (ok === false) bits.push("ingest=ERR");
+  else if (ok === true) bits.push("ingest=OK");
+  if (failures != null && failures > 0) bits.push(`failures=${Math.round(failures)}`);
+  if (backoff != null && backoff > 0) bits.push(`backoff=${Math.round(backoff)}s`);
+  liveDetailEl.textContent = bits.join(" • ");
+  liveDetailEl.title = bits.join(" • ");
+}
+
+function updateRateIndicator(status) {
+  if (!rateIndicatorEl) return;
+  const summary = status && status.ingest_rate_limit ? status.ingest_rate_limit : null;
+  const text = formatRateLimitSummary(summary);
+  rateIndicatorEl.textContent = `Rate: ${text}`;
+  rateIndicatorEl.title = `Rate limit: ${text}`;
+}
+
+function formatTrendsSummary(summary) {
+  if (!summary || typeof summary !== "object") return { text: "Trend: —", title: "" };
+  const ok = typeof summary.vd_ok_total === "number" ? summary.vd_ok_total : 0;
+  const err = typeof summary.vd_error_total === "number" ? summary.vd_error_total : 0;
+  const rl = typeof summary.rate_limit_429_total === "number" ? summary.rate_limit_429_total : 0;
+  const maxBackoff = typeof summary.max_backoff_seconds_24h === "number" ? summary.max_backoff_seconds_24h : 0;
+  const maxFailures = typeof summary.max_consecutive_failures_24h === "number" ? summary.max_consecutive_failures_24h : 0;
+  const text = `Trend 24h: ok=${ok} err=${err} 429=${rl} maxB=${Math.round(maxBackoff)}s maxF=${Math.round(maxFailures)}`;
+  const codes = summary.error_codes && typeof summary.error_codes === "object" ? summary.error_codes : null;
+  const topCodes = [];
+  if (codes) {
+    for (const [k, v] of Object.entries(codes).slice(0, 4)) topCodes.push(`${k}:${v}`);
+  }
+  const title = topCodes.length ? `Top error codes: ${topCodes.join(", ")}` : "";
+  return { text: `Trend: ${text.replace("Trend 24h: ", "")}`, title };
+}
+
+function updateTrendIndicator(trends) {
+  if (!trendIndicatorEl) return;
+  const summary = trends && typeof trends === "object" ? trends.summary : null;
+  const { text, title } = formatTrendsSummary(summary);
+  trendIndicatorEl.textContent = text;
+  if (title) trendIndicatorEl.title = title;
+}
+
+async function refreshTrends() {
+  try {
+    const data = await fetchJson(`${API_BASE}/ui/trends?window_hours=24`);
+    lastTrends = data;
+    updateTrendIndicator(data);
+  } catch (err) {
+    // Keep UI stable; trends are best-effort.
+  }
+}
+
+function formatWeatherRow(row) {
+  if (!row || typeof row !== "object") return "—";
+  const city = row.city ? String(row.city) : "—";
+  const rain = row.rain_mm != null && Number.isFinite(Number(row.rain_mm)) ? `${Number(row.rain_mm).toFixed(1)}mm` : "—";
+  const wind = row.wind_mps != null && Number.isFinite(Number(row.wind_mps)) ? `${Number(row.wind_mps).toFixed(1)}m/s` : "—";
+  const temp = row.temperature_c != null && Number.isFinite(Number(row.temperature_c)) ? `${Number(row.temperature_c).toFixed(1)}°C` : "—";
+  return `${city} rain:${rain} wind:${wind} temp:${temp}`;
+}
+
+async function refreshWeatherLatest() {
+  if (!weatherIndicatorEl) return;
+  try {
+    const data = await fetchJson(`${API_BASE}/ui/weather/latest?limit=1`);
+    const items = data && Array.isArray(data.items) ? data.items : [];
+    const row = items.length ? items[0] : null;
+    weatherIndicatorEl.textContent = `Weather: ${formatWeatherRow(row)}`;
+    if (row && row.timestamp) weatherIndicatorEl.title = `Weather timestamp: ${row.timestamp}`;
+  } catch (err) {
+    // best-effort
+  }
 }
 
 function recordCache(kind, cache) {
@@ -556,6 +703,9 @@ function applyUiStatus(status) {
   latestObservationMinutes = Array.isArray(minutes) ? minutes : [];
   latestObservationMs = last ? parseIsoToMs(last) : null;
   updateFreshnessDisplay();
+  updateTopbarDetail(status);
+  updateRateIndicator(status);
+  applyHealthBadge(status);
 
   applyFollowLatestWindow();
 
@@ -666,6 +816,7 @@ function applyOverlayVisibility() {
   setLayerVisible(hotspotsLayer, Boolean(showHotspots));
   setLayerVisible(eventMarkers, Boolean(showEvents));
   setLayerVisible(impactSegmentsLayer, Boolean(showImpact));
+  setLayerVisible(linkedHotspotsLayer, Boolean(showEvents));
 }
 
 function setHintVisible(el, visible) {
@@ -730,6 +881,11 @@ function formatFileInfo(info) {
   return `ok (mtime=${mtime}, size=${size})`;
 }
 
+function countOkFiles(list) {
+  if (!Array.isArray(list)) return 0;
+  return list.filter((x) => x && x.exists).length;
+}
+
 function buildFixCommands({ hasSegments, hasObservations, hasEvents, hasCorridors } = {}) {
   const commands = [];
   if (!hasSegments || !hasObservations) {
@@ -784,6 +940,12 @@ async function refreshDataHealth() {
     lines.push(`daily_backfill_last_date: ${status.daily_backfill_last_date || "—"}`);
     lines.push(`last_ingest_ok: ${status.last_ingest_ok == null ? "—" : String(status.last_ingest_ok)}`);
     lines.push(`last_error: ${status.last_error || "—"}`);
+    if (status.last_error_code) lines.push(`last_error_code: ${status.last_error_code}`);
+    if (status.last_error_kind) lines.push(`last_error_kind: ${status.last_error_kind}`);
+    if (status.ingest_consecutive_failures != null) lines.push(`consecutive_failures: ${status.ingest_consecutive_failures}`);
+    if (status.ingest_backoff_seconds != null) lines.push(`backoff_seconds: ${status.ingest_backoff_seconds}`);
+    if (status.ingest_last_success_utc) lines.push(`last_success_utc: ${status.ingest_last_success_utc}`);
+    if (status.ingest_rate_limit) lines.push(`rate_limit: ${formatRateLimitSummary(status.ingest_rate_limit)}`);
     if (Array.isArray(status.updated_files) && status.updated_files.length) {
       lines.push(`updated_files: ${status.updated_files.join(", ")}`);
     }
@@ -804,6 +966,7 @@ async function refreshDataHealth() {
     hasSegments = Boolean(diagnostics.segments_csv && diagnostics.segments_csv.exists);
     lines.push(`events.csv: ${formatFileInfo(diagnostics.events_csv)}`);
     hasEvents = Boolean(diagnostics.events_csv && diagnostics.events_csv.exists);
+    lines.push(`weather_observations.csv: ${formatFileInfo(diagnostics.weather_csv)}`);
     lines.push(`corridors.csv: ${diagnostics.corridors_csv_exists ? "ok" : "missing"} (${diagnostics.corridors_csv || "—"})`);
     hasCorridors = Boolean(diagnostics.corridors_csv_exists);
     const obsFiles = diagnostics.observations_csv_files || [];
@@ -817,6 +980,14 @@ async function refreshDataHealth() {
     }
     lines.push(`live_loop_state.json: ${formatFileInfo(diagnostics.live_loop_state)}`);
     lines.push(`backfill_checkpoint.json: ${formatFileInfo(diagnostics.backfill_checkpoint)}`);
+
+    lines.push("");
+    lines.push("Processing outputs:");
+    lines.push(`materialized_defaults.json: ${formatFileInfo(diagnostics.materialized_defaults)}`);
+    lines.push(`baselines_speed_*.csv: ${countOkFiles(diagnostics.baselines_speed_files)} file(s)`);
+    lines.push(`segment_quality_*.csv: ${countOkFiles(diagnostics.segment_quality_files)} file(s)`);
+    lines.push(`congestion_alerts.csv: ${formatFileInfo(diagnostics.congestion_alerts)}`);
+    lines.push(`event_hotspot_links.csv: ${formatFileInfo(diagnostics.event_hotspot_links)}`);
   } else {
     lines.push("");
     lines.push("Diagnostics: unavailable (failed to fetch /ui/diagnostics)");
@@ -1269,6 +1440,12 @@ function initLivePanel() {
 
   applyLiveStateToForm();
   refreshUiStatus();
+  refreshTrends();
+  refreshWeatherLatest();
+  if (trendsRefreshTimer) window.clearInterval(trendsRefreshTimer);
+  trendsRefreshTimer = window.setInterval(() => refreshTrends(), 60 * 1000);
+  if (weatherRefreshTimer) window.clearInterval(weatherRefreshTimer);
+  weatherRefreshTimer = window.setInterval(() => refreshWeatherLatest(), 10 * 60 * 1000);
   startFreshnessTicker();
   startStatusStream();
   updateCacheIndicator();
@@ -1908,7 +2085,7 @@ function updateCorridorInfo(corridor) {
   corridorInfoEl.textContent = parts.join("\n");
 }
 
-function updateEventInfo(event, impact) {
+function updateEventInfo(event, impact, linksInfo) {
   if (!event) {
     if (lastEventsClearedReason) {
       eventInfoEl.textContent = `No event selected.\n${lastEventsClearedReason}`;
@@ -1935,6 +2112,18 @@ function updateEventInfo(event, impact) {
   if (event.lat != null && event.lon != null)
     parts.push(`Location: ${Number(event.lat).toFixed(6)}, ${Number(event.lon).toFixed(6)}`);
   if (event.description) parts.push(`Description: ${event.description}`);
+
+  if (linksInfo) {
+    if (linksInfo.loading) {
+      parts.push("Linked hotspots: loading...");
+    } else if (typeof linksInfo.count === "number") {
+      parts.push(`Linked hotspots: ${Math.round(linksInfo.count)}`);
+      if (linksInfo.reason && linksInfo.count === 0) {
+        const msg = linksInfo.reason.message || linksInfo.reason.code || "No links.";
+        parts.push(`Link note: ${msg}`);
+      }
+    }
+  }
 
   if (impact) {
     const baseline = impact.baseline_mean_speed_kph != null ? Number(impact.baseline_mean_speed_kph).toFixed(1) : "—";
@@ -2220,7 +2409,18 @@ function renderHotspots(rows, metric) {
 
     const label = metricLabel(metric);
     const formatted = formatMetricValue(metric, value);
-    marker.bindPopup(`${row.segment_id} · ${label}: ${formatted}`, { closeButton: false });
+    const extras = [];
+    if (row.baseline_median_speed_kph != null && Number.isFinite(Number(row.baseline_median_speed_kph))) {
+      extras.push(`base=${Number(row.baseline_median_speed_kph).toFixed(1)}kph`);
+    }
+    if (row.relative_drop_pct != null && Number.isFinite(Number(row.relative_drop_pct))) {
+      extras.push(`drop=${Number(row.relative_drop_pct).toFixed(0)}%`);
+    }
+    if (row.coverage_pct != null && Number.isFinite(Number(row.coverage_pct))) {
+      extras.push(`cov=${Number(row.coverage_pct).toFixed(1)}%`);
+    }
+    const extraText = extras.length ? `\n${extras.join(" · ")}` : "";
+    marker.bindPopup(`${row.segment_id} · ${label}: ${formatted}${extraText}`, { closeButton: false });
     marker.on("click", () => {
       selectSegment(String(row.segment_id), { centerMap: false });
       loadTimeseries();
@@ -2256,6 +2456,8 @@ async function loadHotspots() {
 
   const metric = hotspotMetricEl.value || "mean_speed_kph";
   const url = new URL(`${API_BASE}/map/snapshot`);
+  url.searchParams.set("include_baseline", "true");
+  url.searchParams.set("include_quality", "true");
 
   const range = getIsoRange();
   if (range) {
@@ -2756,7 +2958,9 @@ function selectCorridor(corridorId, { centerMap } = { centerMap: false }) {
 function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   selectedEventId = eventId;
   const event = eventsById.get(eventId);
-  updateEventInfo(event, null);
+  lastEventLinksInfo = { loading: true, count: 0, reason: null };
+  linkedHotspotsLayer.clearLayers();
+  updateEventInfo(event, null, lastEventLinksInfo);
 
   if (eventsLoaded) renderEvents(getFilteredEvents(events));
 
@@ -2771,6 +2975,49 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   }
 
   if (!event) return;
+
+  // Load linked hotspots (best-effort; depends on processing output).
+  if (linksAbortController) linksAbortController.abort();
+  linksAbortController = new AbortController();
+  const linksUrl = new URL(`${API_BASE}/ui/event_hotspot_links`);
+  linksUrl.searchParams.set("event_id", String(eventId));
+  linksUrl.searchParams.set("limit", "200");
+  fetchItems(linksUrl.toString(), { signal: linksAbortController.signal })
+    .then(({ items, reason }) => {
+      lastEventLinksInfo = { loading: false, count: Array.isArray(items) ? items.length : 0, reason };
+      updateEventInfo(event, lastEventImpact, lastEventLinksInfo);
+
+      linkedHotspotsLayer.clearLayers();
+      if (!Array.isArray(items) || !items.length) return;
+      for (const link of items) {
+        const segId = link && link.segment_id ? String(link.segment_id) : null;
+        if (!segId) continue;
+        const seg = segmentsById.get(segId);
+        if (!seg || seg.lat == null || seg.lon == null) continue;
+        const lat = Number(seg.lat);
+        const lon = Number(seg.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const score = link.score != null ? Number(link.score) : null;
+        const labelScore = score != null && Number.isFinite(score) ? `score=${score.toFixed(1)}` : "score=—";
+        const ring = L.circleMarker([lat, lon], {
+          radius: 11,
+          color: themeColors().accent2Hex,
+          weight: 3,
+          fillOpacity: 0,
+          opacity: 0.9,
+        }).addTo(linkedHotspotsLayer);
+        ring.bindPopup(`Linked hotspot: ${segId}\n${labelScore}`, { closeButton: false });
+        ring.on("click", () => {
+          selectSegment(segId, { centerMap: false });
+          loadTimeseries();
+        });
+      }
+    })
+    .catch((err) => {
+      if (err?.name === "AbortError") return;
+      lastEventLinksInfo = { loading: false, count: 0, reason: { code: "failed", message: err.message, suggestion: null } };
+      updateEventInfo(event, lastEventImpact, lastEventLinksInfo);
+    });
 
   const minutes = minutesEl.value;
   const url = new URL(`${API_BASE}/events/${encodeURIComponent(eventId)}/impact`);
@@ -2793,7 +3040,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
       const impact = data;
       impactCache.set(cacheKey, impact);
       lastEventImpact = impact;
-      updateEventInfo(event, impact);
+      updateEventInfo(event, impact, lastEventLinksInfo);
       renderEventImpactChart(impact);
 
       if (impact.affected_segments && impact.affected_segments.length) {
@@ -2819,6 +3066,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
         text: `Failed to load event impact: ${err.message}`,
         actions: [{ label: "Refresh health", onClick: () => refreshDataHealth() }],
       });
+      updateEventInfo(event, null, lastEventLinksInfo);
     });
 }
 
@@ -2961,7 +3209,11 @@ function renderRankings(items, type) {
     const mean = row.mean_speed_kph != null ? Number(row.mean_speed_kph).toFixed(1) : "—";
     const freq =
       row.congestion_frequency != null ? `${Math.round(Number(row.congestion_frequency) * 100)}%` : "—";
-    subEl.textContent = `Mean: ${mean} kph · Cong: ${freq}`;
+    const extras = [];
+    if (row.coverage_pct != null && Number.isFinite(Number(row.coverage_pct))) extras.push(`Cov: ${Number(row.coverage_pct).toFixed(1)}%`);
+    if (row.baseline_median_speed_kph != null && Number.isFinite(Number(row.baseline_median_speed_kph)))
+      extras.push(`Base: ${Number(row.baseline_median_speed_kph).toFixed(1)} kph`);
+    subEl.textContent = `Mean: ${mean} kph · Cong: ${freq}${extras.length ? ` · ${extras.join(" · ")}` : ""}`;
 
     if (type === "corridors") {
       const name = row.corridor_name ? ` - ${row.corridor_name}` : "";
@@ -3003,6 +3255,8 @@ async function loadRankings() {
       : new URL(`${API_BASE}/rankings/reliability`);
 
   url.searchParams.set("limit", limit);
+  url.searchParams.set("include_quality", "true");
+  url.searchParams.set("include_baseline", "true");
   if (minutes) url.searchParams.set("minutes", minutes);
   applyReliabilityOverrides(url);
 
@@ -3142,7 +3396,7 @@ function applyEventsFilters() {
       lastEventImpact = null;
       impactSegmentsLayer.clearLayers();
       lastEventsClearedReason = "Event selection cleared (filtered out).";
-      updateEventInfo(null, null);
+      updateEventInfo(null, null, null);
     }
   }
 }
@@ -3230,7 +3484,7 @@ async function loadEvents() {
       selectedEventId = null;
       lastEventImpact = null;
       lastEventsClearedReason = null;
-      updateEventInfo(null, null);
+      updateEventInfo(null, null, null);
       populateEventsTypeOptions(events);
       applyEventsFilters();
       setStatus(`Events loaded from cache (${events.length} rows, cached_at=${cached.at_utc || "?"}).`);
@@ -3249,7 +3503,7 @@ async function loadEvents() {
   selectedEventId = null;
   lastEventImpact = null;
   lastEventsClearedReason = null;
-  updateEventInfo(null, null);
+  updateEventInfo(null, null, null);
   populateEventsTypeOptions(events);
   applyEventsFilters();
   setStatus(`Loaded ${events.length} events (${getFilteredEvents(events).length} shown).`);
@@ -3266,7 +3520,7 @@ function clearEvents() {
   selectedEventId = null;
   lastEventImpact = null;
   lastEventsClearedReason = null;
-  updateEventInfo(null, null);
+  updateEventInfo(null, null, null);
   setHintVisible(eventsHintEl, false);
   if (eventsEl) eventsEl.textContent = "No events loaded.";
   setStatus("Events cleared.");

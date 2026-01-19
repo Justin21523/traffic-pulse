@@ -151,6 +151,34 @@ body.theme-policy .ranking-row:hover {
   flex: 0 0 auto;
 }
 
+.topbar-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-link {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.70);
+  color: rgba(15, 23, 42, 0.84);
+  text-decoration: none;
+  font-size: 12px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+.topbar-link:hover {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.topbar-link:active {
+  transform: translateY(1px);
+}
+
 .topbar-live {
   display: flex;
   flex-direction: column;
@@ -193,6 +221,21 @@ body.theme-policy .ranking-row:hover {
 .topbar-pill.offline {
   border-color: rgba(239, 68, 68, 0.30);
   background: rgba(239, 68, 68, 0.12);
+}
+
+.topbar-pill.health-good {
+  border-color: rgba(16, 185, 129, 0.40);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.topbar-pill.health-warn {
+  border-color: rgba(245, 158, 11, 0.40);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.topbar-pill.health-bad {
+  border-color: rgba(239, 68, 68, 0.38);
+  background: rgba(239, 68, 68, 0.14);
 }
 
 .topbar-small {
