@@ -144,6 +144,38 @@ function setCssVar(name, value) {
   document.documentElement.style.setProperty(name, value);
 }
 
+function getCssVar(name, fallback) {
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue(name);
+  const trimmed = String(value || "").trim();
+  return trimmed || fallback;
+}
+
+function parseHexColor(hex, fallbackRgb) {
+  const text = String(hex || "").trim();
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(text);
+  if (!m) return fallbackRgb;
+  const raw = m[1];
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  if (![r, g, b].every((n) => Number.isFinite(n))) return fallbackRgb;
+  return [r, g, b];
+}
+
+function themeColors() {
+  const accentHex = getCssVar("--accent", "#2563eb");
+  const accent2Hex = getCssVar("--accent-2", "#06b6d4");
+  const dangerHex = getCssVar("--danger", "#ef4444");
+  return {
+    accentHex,
+    accent2Hex,
+    dangerHex,
+    accentRgb: parseHexColor(accentHex, [37, 99, 235]),
+    accent2Rgb: parseHexColor(accent2Hex, [6, 182, 212]),
+    dangerRgb: parseHexColor(dangerHex, [239, 68, 68]),
+  };
+}
+
 const map = L.map("map", { zoomControl: true }).setView([25.033, 121.5654], 12);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
@@ -1374,8 +1406,9 @@ function updateHotspotLegend(metric, range) {
         : "slow → fast";
   hotspotLegendTitleEl.textContent = `Hotspots · ${metricLabel(metric)} (${unit}) · ${hint}`;
 
-  const accent = "rgba(76, 201, 240, 0.95)";
-  const danger = "rgba(255, 77, 109, 0.95)";
+  const colors = themeColors();
+  const accent = `rgba(${colors.accent2Rgb[0]}, ${colors.accent2Rgb[1]}, ${colors.accent2Rgb[2]}, 0.92)`;
+  const danger = `rgba(${colors.dangerRgb[0]}, ${colors.dangerRgb[1]}, ${colors.dangerRgb[2]}, 0.92)`;
   const gradient =
     metric === "congestion_frequency"
       ? `linear-gradient(90deg, ${accent}, ${danger})`
@@ -1408,8 +1441,9 @@ function renderHotspots(rows, metric) {
   }
   updateHotspotsHint({ empty: false });
 
-  const accent = [76, 201, 240];
-  const danger = [255, 77, 109];
+  const colors = themeColors();
+  const accent = colors.accent2Rgb;
+  const danger = colors.dangerRgb;
   const range = computeMetricRange(rows, metric);
   updateHotspotLegend(metric, range);
 
@@ -1422,7 +1456,7 @@ function renderHotspots(rows, metric) {
 
     const raw = row[metric];
     const value = raw == null ? null : Number(raw);
-    let color = "rgba(255, 255, 255, 0.25)";
+    let color = "rgba(15, 23, 42, 0.12)";
     if (value != null && Number.isFinite(value)) {
       if (metric === "congestion_frequency") {
         color = lerpColor(accent, danger, clamp(value, 0, 1));
@@ -1583,6 +1617,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
     return;
   }
 
+  const colors = themeColors();
   const x = points.map((p) => p.timestamp);
   const speed = points.map((p) => p.speed_kph);
   const volume = points.map((p) => p.volume);
@@ -1594,7 +1629,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       type: "scatter",
       mode: "lines",
       name: "Speed (kph)",
-      line: { color: "#4cc9f0", width: 2 },
+      line: { color: colors.accentHex, width: 2 },
       yaxis: "y",
     },
     {
@@ -1602,7 +1637,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       y: volume,
       type: "bar",
       name: "Volume",
-      marker: { color: "rgba(255, 255, 255, 0.25)" },
+      marker: { color: "rgba(37, 99, 235, 0.18)" },
       yaxis: "y2",
     },
   ];
@@ -1630,7 +1665,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       type: "scatter",
       mode: "lines",
       name: "Baseline (mean)",
-      line: { color: "rgba(255,255,255,0.55)", width: 1, dash: "dot" },
+      line: { color: "rgba(51, 65, 85, 0.55)", width: 1, dash: "dot" },
       yaxis: "y",
     });
 
@@ -1640,7 +1675,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       type: "scatter",
       mode: "markers",
       name: "Anomaly",
-      marker: { size: 7, color: "#ff4d6d", line: { width: 1, color: "rgba(0,0,0,0.25)" } },
+      marker: { size: 7, color: colors.dangerHex, line: { width: 1, color: "rgba(15,23,42,0.18)" } },
       yaxis: "y",
     });
   }
@@ -1648,7 +1683,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
   const layout = {
     title: {
       text: title || "Time Series",
-      font: { size: 12, color: "rgba(255,255,255,0.85)" },
+      font: { size: 12, color: "rgba(15, 23, 42, 0.85)" },
       x: 0.02,
     },
     paper_bgcolor: "rgba(0,0,0,0)",
@@ -1656,26 +1691,26 @@ function renderTimeseries(points, { title, anomalies } = {}) {
     margin: { l: 48, r: 48, t: 32, b: 34 },
     xaxis: {
       type: "date",
-      gridcolor: "rgba(255,255,255,0.08)",
-      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+      gridcolor: "rgba(15, 23, 42, 0.08)",
+      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
     },
     yaxis: {
-      title: { text: "Speed (kph)", font: { size: 10, color: "rgba(255,255,255,0.75)" } },
-      gridcolor: "rgba(255,255,255,0.08)",
-      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+      title: { text: "Speed (kph)", font: { size: 10, color: "rgba(51, 65, 85, 0.75)" } },
+      gridcolor: "rgba(15, 23, 42, 0.08)",
+      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
     },
     yaxis2: {
-      title: { text: "Volume", font: { size: 10, color: "rgba(255,255,255,0.75)" } },
+      title: { text: "Volume", font: { size: 10, color: "rgba(51, 65, 85, 0.75)" } },
       overlaying: "y",
       side: "right",
-      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
       showgrid: false,
     },
     legend: {
       orientation: "h",
       x: 0.02,
       y: 1.12,
-      font: { size: 10, color: "rgba(255,255,255,0.75)" },
+      font: { size: 10, color: "rgba(51, 65, 85, 0.75)" },
     },
   };
 
@@ -1691,6 +1726,7 @@ function renderEventImpactChart(impact) {
     return;
   }
 
+  const colors = themeColors();
   const x = points.map((p) => p.timestamp);
   const speed = points.map((p) => p.speed_kph);
   const volume = points.map((p) => p.volume);
@@ -1705,7 +1741,7 @@ function renderEventImpactChart(impact) {
       type: "scatter",
       mode: "lines",
       name: "Speed (kph)",
-      line: { color: "#4cc9f0", width: 2 },
+      line: { color: colors.accentHex, width: 2 },
       yaxis: "y",
     },
     {
@@ -1713,7 +1749,7 @@ function renderEventImpactChart(impact) {
       y: volume,
       type: "bar",
       name: "Volume",
-      marker: { color: "rgba(255, 255, 255, 0.25)" },
+      marker: { color: "rgba(37, 99, 235, 0.18)" },
       yaxis: "y2",
     },
   ];
@@ -1725,7 +1761,7 @@ function renderEventImpactChart(impact) {
       type: "scatter",
       mode: "lines",
       name: "Baseline mean",
-      line: { color: "rgba(255,255,255,0.55)", width: 1, dash: "dot" },
+      line: { color: "rgba(51, 65, 85, 0.55)", width: 1, dash: "dot" },
       yaxis: "y",
     });
   }
@@ -1740,39 +1776,39 @@ function renderEventImpactChart(impact) {
       x1: impact.event.end_time,
       y0: 0,
       y1: 1,
-      fillcolor: "rgba(255, 77, 109, 0.10)",
+      fillcolor: "rgba(239, 68, 68, 0.10)",
       line: { width: 0 },
     });
   }
 
   const title = impact.event ? `Event ${impact.event.event_id}` : "Event impact";
   const layout = {
-    title: { text: title, font: { size: 12, color: "rgba(255,255,255,0.85)" }, x: 0.02 },
+    title: { text: title, font: { size: 12, color: "rgba(15, 23, 42, 0.85)" }, x: 0.02 },
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     margin: { l: 48, r: 48, t: 32, b: 34 },
     xaxis: {
       type: "date",
-      gridcolor: "rgba(255,255,255,0.08)",
-      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+      gridcolor: "rgba(15, 23, 42, 0.08)",
+      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
     },
     yaxis: {
-      title: { text: "Speed (kph)", font: { size: 10, color: "rgba(255,255,255,0.75)" } },
-      gridcolor: "rgba(255,255,255,0.08)",
-      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+      title: { text: "Speed (kph)", font: { size: 10, color: "rgba(51, 65, 85, 0.75)" } },
+      gridcolor: "rgba(15, 23, 42, 0.08)",
+      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
     },
     yaxis2: {
-      title: { text: "Volume", font: { size: 10, color: "rgba(255,255,255,0.75)" } },
+      title: { text: "Volume", font: { size: 10, color: "rgba(51, 65, 85, 0.75)" } },
       overlaying: "y",
       side: "right",
-      tickfont: { color: "rgba(255,255,255,0.75)", size: 10 },
+      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
       showgrid: false,
     },
     legend: {
       orientation: "h",
       x: 0.02,
       y: 1.12,
-      font: { size: 10, color: "rgba(255,255,255,0.75)" },
+      font: { size: 10, color: "rgba(51, 65, 85, 0.75)" },
     },
     shapes,
   };
@@ -1919,9 +1955,9 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
         for (const seg of impact.affected_segments) {
           const m = L.circleMarker([seg.lat, seg.lon], {
             radius: 5,
-            color: "#ff4d6d",
+            color: themeColors().dangerHex,
             weight: 2,
-            fillColor: "rgba(255, 77, 109, 0.6)",
+            fillColor: "rgba(239, 68, 68, 0.28)",
             fillOpacity: 0.65,
           }).addTo(impactSegmentsLayer);
           m.bindPopup(`${seg.segment_id} (${Math.round(seg.distance_m)} m)`, { closeButton: false });
@@ -1962,9 +1998,9 @@ async function loadSegments() {
 
     const marker = L.circleMarker([lat, lon], {
       radius: 5,
-      color: "#4cc9f0",
+      color: themeColors().accentHex,
       weight: 2,
-      fillColor: "rgba(76, 201, 240, 0.6)",
+      fillColor: "rgba(37, 99, 235, 0.22)",
       fillOpacity: 0.6,
     }).addTo(markers);
 
@@ -2213,10 +2249,10 @@ function renderEventMarkers(items) {
 
     const marker = L.circleMarker([lat, lon], {
       radius: 6,
-      color: "#ff4d6d",
+      color: themeColors().dangerHex,
       weight: 2,
-      fillColor: "rgba(255, 77, 109, 0.7)",
-      fillOpacity: 0.7,
+      fillColor: "rgba(239, 68, 68, 0.20)",
+      fillOpacity: 0.85,
     }).addTo(eventMarkers);
 
     const label = `${event.event_id}${event.event_type ? ` - ${event.event_type}` : ""}`;
