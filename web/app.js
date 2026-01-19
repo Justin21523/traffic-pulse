@@ -11,6 +11,9 @@ const API_BASE = (() => {
 const statusEl = document.getElementById("status");
 const apiBaseEl = document.getElementById("api-base");
 const themeSelectEl = document.getElementById("theme-select");
+const liveIndicatorEl = document.getElementById("live-indicator");
+const cacheIndicatorEl = document.getElementById("cache-indicator");
+const copyLinkButton = document.getElementById("copy-link");
 
 const sidebarEl = document.getElementById("sidebar");
 const sidebarResizerEl = document.getElementById("sidebar-resizer");
@@ -56,6 +59,9 @@ const eventsTypeEl = document.getElementById("events-type");
 const eventsWithinRangeEl = document.getElementById("events-within-range");
 const eventsSearchEl = document.getElementById("events-search");
 const clearEventsButton = document.getElementById("clear-events");
+const eventsHintEl = document.getElementById("events-hint");
+const eventsHintTextEl = document.getElementById("events-hint-text");
+const eventsRelaxFiltersButton = document.getElementById("events-relax-filters");
 
 const hotspotMetricEl = document.getElementById("hotspot-metric");
 const loadHotspotsButton = document.getElementById("load-hotspots");
@@ -203,6 +209,7 @@ const hotspotsLayer = L.layerGroup().addTo(map);
 
 let uiDefaults = null;
 let uiState = loadUiState();
+const apiOverrideParam = new URLSearchParams(window.location.search).get("api");
 let suppressUrlSync = false;
 let urlSyncTimer = null;
 let pendingUrlSelection = null;
@@ -318,6 +325,8 @@ function applyUrlOverridesToForm() {
 function syncUrlFromUi() {
   const params = new URLSearchParams();
 
+  if (apiOverrideParam) params.set("api", apiOverrideParam);
+
   const theme = String(getNested(uiState, "layout.theme", "product"));
   if (theme && theme !== "product") params.set("theme", theme);
 
@@ -394,9 +403,56 @@ let uiStatusStream = null;
 let uiStatusStreamRetryMs = 800;
 let freshnessTicker = null;
 let lastLiveRefreshAtMs = 0;
+let lastCacheInfo = { hotspots: null, rankings: null, events: null };
+let lastSseState = { mode: "polling", detail: "Polling" };
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setLiveIndicator({ mode, detail }) {
+  lastSseState = { mode: mode || "polling", detail: detail || "Polling" };
+  if (!liveIndicatorEl) return;
+  liveIndicatorEl.classList.remove("connected", "reconnecting", "polling", "offline");
+  const cls =
+    lastSseState.mode === "connected"
+      ? "connected"
+      : lastSseState.mode === "reconnecting"
+        ? "reconnecting"
+        : lastSseState.mode === "offline"
+          ? "offline"
+          : "polling";
+  liveIndicatorEl.classList.add(cls);
+  liveIndicatorEl.textContent = lastSseState.detail;
+}
+
+function formatCacheBadge(entry) {
+  if (!entry || !entry.status) return "—";
+  const ttl = entry.ttl != null && entry.ttl !== "" ? `${entry.ttl}s` : "";
+  const ttlPart = ttl ? `(${ttl})` : "";
+  return `${entry.status}${ttlPart}`;
+}
+
+function updateCacheIndicator() {
+  if (!cacheIndicatorEl) return;
+  const h = formatCacheBadge(lastCacheInfo.hotspots);
+  const r = formatCacheBadge(lastCacheInfo.rankings);
+  const e = formatCacheBadge(lastCacheInfo.events);
+  cacheIndicatorEl.textContent = `Cache · H:${h} R:${r} E:${e}`;
+}
+
+function recordCache(kind, cache) {
+  if (!cache) return;
+  if (!["hotspots", "rankings", "events"].includes(kind)) return;
+  lastCacheInfo = {
+    ...lastCacheInfo,
+    [kind]: {
+      status: cache.status ? String(cache.status).toUpperCase() : null,
+      ttl: cache.ttl != null ? String(cache.ttl) : null,
+      atMs: Date.now(),
+    },
+  };
+  updateCacheIndicator();
 }
 
 function setFreshness({ label, detail, level }) {
@@ -465,6 +521,10 @@ function applyUiStatus(status) {
   if (!config.enabled) return;
   if (!last) return;
 
+  if (status.last_ingest_ok === false) {
+    setLiveIndicator({ mode: "offline", detail: "Ingest error" });
+  }
+
   const nowMs = Date.now();
   const minIntervalMs = clamp(Number(config.intervalSeconds) || 60, 5, 3600) * 1000;
   if (nowMs - lastLiveRefreshAtMs < minIntervalMs) return;
@@ -505,12 +565,17 @@ function startStatusStream() {
   const url = new URL(`${API_BASE}/stream/status`);
   url.searchParams.set("interval_seconds", "5");
 
+  setLiveIndicator({ mode: "reconnecting", detail: "SSE connecting" });
   try {
     uiStatusStream = new EventSource(url.toString());
   } catch (err) {
     uiStatusStream = null;
     return;
   }
+
+  uiStatusStream.addEventListener("open", () => {
+    setLiveIndicator({ mode: "connected", detail: "SSE connected" });
+  });
 
   uiStatusStream.addEventListener("message", (ev) => {
     try {
@@ -523,6 +588,7 @@ function startStatusStream() {
   });
 
   uiStatusStream.addEventListener("error", () => {
+    setLiveIndicator({ mode: "reconnecting", detail: "SSE reconnecting" });
     try {
       uiStatusStream?.close();
     } catch (err) {
@@ -543,6 +609,7 @@ function stopStatusStream() {
     // ignore
   }
   uiStatusStream = null;
+  setLiveIndicator({ mode: "offline", detail: "SSE closed" });
 }
 
 function setLayerVisible(layer, visible) {
@@ -733,6 +800,26 @@ function applyThemeToVisuals() {
   }
 }
 
+async function copyShareLink() {
+  syncUrlFromUi();
+  const url = window.location.href;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+      setStatus("Link copied to clipboard.");
+      return;
+    }
+  } catch (err) {
+    // fall back below
+  }
+
+  try {
+    window.prompt("Copy this link:", url);
+  } catch (err) {
+    // ignore
+  }
+}
+
 let _layoutResizeRaf = null;
 function scheduleLayoutResize() {
   if (_layoutResizeRaf != null) return;
@@ -864,6 +951,8 @@ let liveTimer = null;
 function stopLiveRefresh() {
   if (liveTimer) window.clearInterval(liveTimer);
   liveTimer = null;
+  if (!isStatusStreamSupported()) return;
+  // Keep SSE stream active; only stop when the user disables live mode.
 }
 
 function startLiveRefresh() {
@@ -874,9 +963,11 @@ function startLiveRefresh() {
   // Prefer SSE-driven refresh (no polling).
   if (isStatusStreamSupported()) {
     startStatusStream();
+    setLiveIndicator({ mode: "connected", detail: uiStatusStream ? "SSE connected" : "SSE" });
     return;
   }
 
+  setLiveIndicator({ mode: "polling", detail: "Polling" });
   const safe = clamp(Number.isFinite(config.intervalSeconds) ? config.intervalSeconds : 60, 5, 3600);
   liveTimer = window.setInterval(() => {
     refreshLiveNow({ silent: true });
@@ -924,12 +1015,15 @@ function initLivePanel() {
   refreshUiStatus();
   startFreshnessTicker();
   startStatusStream();
+  updateCacheIndicator();
+  if (!isStatusStreamSupported()) setLiveIndicator({ mode: "polling", detail: "Polling" });
   startLiveRefresh();
 
   liveAutoRefreshEl.addEventListener("change", () => {
     uiState.live = uiState.live || {};
     uiState.live.autoRefresh = Boolean(liveAutoRefreshEl.checked);
     saveUiState(uiState);
+    if (!uiState.live.autoRefresh) setLiveIndicator({ mode: "polling", detail: "Paused" });
     startLiveRefresh();
   });
 
@@ -1562,12 +1656,16 @@ function updateEventInfo(event, impact) {
   if (!event) {
     if (lastEventsClearedReason) {
       eventInfoEl.textContent = `No event selected.\n${lastEventsClearedReason}`;
+      if (eventsHintTextEl) eventsHintTextEl.textContent = lastEventsClearedReason;
+      setHintVisible(eventsHintEl, true);
     } else {
       eventInfoEl.textContent = "No event selected.";
+      setHintVisible(eventsHintEl, false);
     }
     return;
   }
   lastEventsClearedReason = null;
+  setHintVisible(eventsHintEl, false);
 
   const parts = [];
   parts.push(`ID: ${event.event_id}`);
@@ -1902,9 +2000,10 @@ async function loadHotspots() {
   applyReliabilityOverrides(url);
 
   try {
-    const { items, reason } = await fetchItems(url.toString());
+    const { items, reason, cache } = await fetchItems(url.toString());
     hotspotRows = items;
     lastHotspotsReason = reason;
+    recordCache("hotspots", cache);
   } catch (err) {
     hotspotsLoaded = false;
     lastHotspotsReason = null;
@@ -2542,9 +2641,10 @@ async function loadRankings() {
 
   setStatus("Loading rankings...");
   try {
-    const { items, reason } = await fetchItems(url.toString());
+    const { items, reason, cache } = await fetchItems(url.toString());
     lastRankings = items;
     lastRankingsReason = reason;
+    recordCache("rankings", cache);
     renderRankings(items, type);
     rankingsLoaded = true;
     setStatus(`Loaded ${items.length} ranking rows.`);
@@ -2729,9 +2829,10 @@ async function loadEvents() {
   url.searchParams.set("limit", "1000");
 
   try {
-    const { items, reason } = await fetchItems(url.toString());
+    const { items, reason, cache } = await fetchItems(url.toString());
     events = items;
     lastEventsReason = reason;
+    recordCache("events", cache);
   } catch (err) {
     eventsLoaded = false;
     eventsEl.textContent = "Failed to load events. Run scripts/build_events.py and check ingestion.events config.";
@@ -2764,6 +2865,7 @@ function clearEvents() {
   lastEventImpact = null;
   lastEventsClearedReason = null;
   updateEventInfo(null, null);
+  setHintVisible(eventsHintEl, false);
   if (eventsEl) eventsEl.textContent = "No events loaded.";
   setStatus("Events cleared.");
 }
@@ -2806,6 +2908,21 @@ function initEventsPanel() {
 
   if (clearEventsButton) {
     clearEventsButton.addEventListener("click", clearEvents);
+  }
+
+  if (eventsRelaxFiltersButton) {
+    eventsRelaxFiltersButton.addEventListener("click", () => {
+      if (eventsWithinRangeEl) eventsWithinRangeEl.checked = false;
+      if (eventsSearchEl) eventsSearchEl.value = "";
+      if (eventsTypeEl) eventsTypeEl.value = "all";
+      uiState.events = uiState.events || {};
+      uiState.events.onlyWithinRange = false;
+      uiState.events.type = "all";
+      saveUiState(uiState);
+      applyEventsFilters();
+      setHintVisible(eventsHintEl, false);
+      setStatus("Events filters relaxed.");
+    });
   }
 
   let timer = null;
@@ -2897,6 +3014,7 @@ initHotspotAutoReload();
 initTimeseriesFollowLatest();
 initEventsPanel();
 initQuickGuides();
+if (copyLinkButton) copyLinkButton.addEventListener("click", copyShareLink);
 
 loadUiDefaultsFromApi().then((defaults) => {
   if (defaults) applyDefaultsToForm(defaults);

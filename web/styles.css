@@ -115,6 +115,18 @@ body.theme-policy .button {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.10);
 }
 
+body.theme-policy .topbar-live {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+}
+
+body.theme-policy .topbar-button {
+  background: rgba(255, 255, 255, 0.86);
+  border-color: rgba(15, 23, 42, 0.10);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
+}
+
 body.theme-policy .ranking-row:hover {
   background: rgba(14, 165, 233, 0.06);
 }
@@ -137,6 +149,79 @@ body.theme-policy .ranking-row:hover {
   align-items: center;
   gap: 10px;
   flex: 0 0 auto;
+}
+
+.topbar-live {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  padding: 6px 10px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+.topbar-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(15, 23, 42, 0.04);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.topbar-pill.connected {
+  border-color: rgba(6, 182, 212, 0.35);
+  background: rgba(6, 182, 212, 0.12);
+}
+
+.topbar-pill.reconnecting {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.topbar-pill.polling {
+  border-color: rgba(37, 99, 235, 0.30);
+  background: rgba(37, 99, 235, 0.10);
+}
+
+.topbar-pill.offline {
+  border-color: rgba(239, 68, 68, 0.30);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.topbar-small {
+  font-size: 11px;
+  color: rgba(51, 65, 85, 0.78);
+  line-height: 1.15;
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-button {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(255, 255, 255, 0.78);
+  color: rgba(15, 23, 42, 0.90);
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+.topbar-button:hover {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.topbar-button:active {
+  transform: translateY(1px);
 }
 
 .topbar-field {
@@ -162,6 +247,12 @@ body.theme-policy .ranking-row:hover {
   border: 1px solid rgba(15, 23, 42, 0.12);
   background: rgba(255, 255, 255, 0.92);
   color: rgba(15, 23, 42, 0.92);
+}
+
+.topbar-select:focus {
+  border-color: rgba(37, 99, 235, 0.55);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+  outline: none;
 }
 
 .title h1 {

@@ -28,6 +28,13 @@
             <option value="policy">Policy / Deck</option>
           </select>
         </label>
+        <div class="topbar-live" title="Live status">
+          <span class="topbar-pill" id="live-indicator">Polling</span>
+          <span class="topbar-small mono" id="cache-indicator">Cache: —</span>
+        </div>
+        <button class="topbar-button secondary" id="copy-link" type="button" title="Copy a shareable dashboard link">
+          Copy link
+        </button>
       </div>
       <div class="status" id="status">Ready.</div>
     </header>
@@ -332,10 +339,10 @@
           </div>
         </div>
 
-        <div class="panel" data-panel-id="events">
-          <div class="panel-title">Events</div>
-          <div class="panel-body">
-            <button class="button" id="load-events">Load events (map bounds)</button>
+	        <div class="panel" data-panel-id="events">
+	          <div class="panel-title">Events</div>
+	          <div class="panel-body">
+	            <button class="button" id="load-events">Load events (map bounds)</button>
             <label class="check">
               <input type="checkbox" id="events-auto" />
               <span>Auto reload on map move</span>
@@ -354,11 +361,20 @@
               <span class="label">Search</span>
               <input id="events-search" type="text" placeholder="Filter by road/type/description" />
             </label>
-            <button class="button secondary" id="clear-events">Clear events</button>
-            <div class="events" id="events"></div>
-            <div class="segment-info" id="event-info">No event selected.</div>
-          </div>
-        </div>
+	            <button class="button secondary" id="clear-events">Clear events</button>
+	            <div class="events" id="events"></div>
+	            <div class="hint-box hidden" id="events-hint">
+	              <div class="hint-title">Selection hidden by filters</div>
+	              <div class="hint-text" id="events-hint-text">
+	                The selected event is no longer visible under the current filters.
+	              </div>
+	              <div class="button-row">
+	                <button class="button secondary" id="events-relax-filters">Relax filters</button>
+	              </div>
+	            </div>
+	            <div class="segment-info" id="event-info">No event selected.</div>
+	          </div>
+	        </div>
 
         <div class="panel" data-panel-id="help">
           <div class="panel-title">Help</div>
