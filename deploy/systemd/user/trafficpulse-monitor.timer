@@ -1,0 +1,12 @@
+[Unit]
+Description=TrafficPulse health monitor timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=trafficpulse-monitor.service
+
+[Install]
+WantedBy=timers.target
+

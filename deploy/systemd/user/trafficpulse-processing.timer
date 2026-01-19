@@ -1,0 +1,12 @@
+[Unit]
+Description=TrafficPulse processing timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=trafficpulse-processing.service
+
+[Install]
+WantedBy=timers.target
+

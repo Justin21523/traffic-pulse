@@ -1,0 +1,18 @@
+[Unit]
+Description=TrafficPulse ingestion (Docker Compose)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/web-projects/traffic-pulse
+ExecStartPre=/usr/bin/bash -lc 'until /usr/bin/docker info >/dev/null 2>&1; do sleep 5; done'
+ExecStart=/usr/bin/docker compose up -d ingestion
+ExecStop=/usr/bin/docker compose stop ingestion
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target
+

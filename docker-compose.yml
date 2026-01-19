@@ -1,0 +1,49 @@
+services:
+  ingestion:
+    build: .
+    image: trafficpulse:local
+    user: "${TRAFFICPULSE_UID:-1000}:${TRAFFICPULSE_GID:-1000}"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Allow fallback to shell environment when .env is not used.
+      - TDX_CLIENT_ID=${TDX_CLIENT_ID:-}
+      - TDX_CLIENT_SECRET=${TDX_CLIENT_SECRET:-}
+      - TRAFFICPULSE_CONFIG=${TRAFFICPULSE_CONFIG:-configs/config.yaml}
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - ./configs:/app/configs
+    command:
+      [
+        "python",
+        "scripts/ingest_runner.py",
+        "--live-only",
+        "--interval-seconds",
+        "${INGEST_INTERVAL_SECONDS:-60}",
+        "--min-request-interval",
+        "${MIN_REQUEST_INTERVAL_SECONDS:-3.0}",
+        "--segments-refresh-hours",
+        "${SEGMENTS_REFRESH_HOURS:-24}",
+        "--no-cache"
+      ]
+
+  api:
+    build: .
+    image: trafficpulse:local
+    user: "${TRAFFICPULSE_UID:-1000}:${TRAFFICPULSE_GID:-1000}"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TDX_CLIENT_ID=${TDX_CLIENT_ID:-}
+      - TDX_CLIENT_SECRET=${TDX_CLIENT_SECRET:-}
+      - TRAFFICPULSE_CONFIG=${TRAFFICPULSE_CONFIG:-configs/config.yaml}
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - ./configs:/app/configs
+    ports:
+      - "${TRAFFICPULSE_API_PORT:-8003}:8000"
+    command: ["python", "scripts/run_api.py"]
