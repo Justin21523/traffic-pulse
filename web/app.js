@@ -10,6 +10,7 @@ const API_BASE = (() => {
 
 const statusEl = document.getElementById("status");
 const apiBaseEl = document.getElementById("api-base");
+const themeSelectEl = document.getElementById("theme-select");
 
 const sidebarEl = document.getElementById("sidebar");
 const sidebarResizerEl = document.getElementById("sidebar-resizer");
@@ -145,7 +146,8 @@ function setCssVar(name, value) {
 }
 
 function getCssVar(name, fallback) {
-  const value = window.getComputedStyle(document.documentElement).getPropertyValue(name);
+  const source = document.body || document.documentElement;
+  const value = window.getComputedStyle(source).getPropertyValue(name);
   const trimmed = String(value || "").trim();
   return trimmed || fallback;
 }
@@ -162,14 +164,26 @@ function parseHexColor(hex, fallbackRgb) {
   return [r, g, b];
 }
 
+function rgba(rgb, alpha) {
+  const a = Number(alpha);
+  if (!rgb || rgb.length !== 3) return `rgba(0,0,0,${Number.isFinite(a) ? a : 1})`;
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${Number.isFinite(a) ? a : 1})`;
+}
+
 function themeColors() {
   const accentHex = getCssVar("--accent", "#2563eb");
   const accent2Hex = getCssVar("--accent-2", "#06b6d4");
   const dangerHex = getCssVar("--danger", "#ef4444");
+  const text = getCssVar("--text", "rgba(15, 23, 42, 0.92)");
+  const muted = getCssVar("--muted", "rgba(51, 65, 85, 0.78)");
+  const panelBorder = getCssVar("--panel-border", "rgba(15, 23, 42, 0.10)");
   return {
     accentHex,
     accent2Hex,
     dangerHex,
+    text,
+    muted,
+    panelBorder,
     accentRgb: parseHexColor(accentHex, [37, 99, 235]),
     accent2Rgb: parseHexColor(accent2Hex, [6, 182, 212]),
     dangerRgb: parseHexColor(dangerHex, [239, 68, 68]),
@@ -217,6 +231,7 @@ let latestObservationMs = null;
 let latestObservationIso = null;
 let latestObservationMinutes = [];
 let lastRankings = [];
+let lastEventImpact = null;
 
 let lastTimeseries = { entity: null, range: null, minutes: null, points: [], anomalies: null };
 let lastEventsClearedReason = null;
@@ -403,6 +418,70 @@ function applyLayoutFromState() {
   const chartHeight = getNested(uiState, "layout.chartHeightPx", null);
   if (typeof chartHeight === "number" && Number.isFinite(chartHeight)) {
     setCssVar("--chart-height", `${Math.round(chartHeight)}px`);
+  }
+}
+
+function applyThemeFromState() {
+  const theme = String(getNested(uiState, "layout.theme", "product"));
+  document.body.classList.remove("theme-policy", "theme-product");
+  if (theme === "policy") document.body.classList.add("theme-policy");
+  else document.body.classList.add("theme-product");
+  if (themeSelectEl) themeSelectEl.value = theme === "policy" ? "policy" : "product";
+}
+
+function initThemeToggle() {
+  applyThemeFromState();
+  if (!themeSelectEl) return;
+  themeSelectEl.addEventListener("change", () => {
+    const theme = themeSelectEl.value === "policy" ? "policy" : "product";
+    uiState.layout = uiState.layout || {};
+    uiState.layout.theme = theme;
+    saveUiState(uiState);
+    applyThemeFromState();
+    applyThemeToVisuals();
+  });
+}
+
+function applyThemeToVisuals() {
+  const colors = themeColors();
+
+  markers.eachLayer((layer) => {
+    if (!layer || typeof layer.setStyle !== "function") return;
+    layer.setStyle({
+      color: colors.accentHex,
+      fillColor: rgba(colors.accentRgb, 0.22),
+    });
+  });
+
+  eventMarkers.eachLayer((layer) => {
+    if (!layer || typeof layer.setStyle !== "function") return;
+    layer.setStyle({
+      color: colors.dangerHex,
+      fillColor: rgba(colors.dangerRgb, 0.2),
+    });
+  });
+
+  impactSegmentsLayer.eachLayer((layer) => {
+    if (!layer || typeof layer.setStyle !== "function") return;
+    layer.setStyle({
+      color: colors.dangerHex,
+      fillColor: rgba(colors.dangerRgb, 0.28),
+    });
+  });
+
+  if (hotspotsLoaded && hotspotRows && hotspotRows.length) {
+    renderHotspots(hotspotRows, hotspotMetricEl ? hotspotMetricEl.value : "mean_speed_kph");
+  } else {
+    updateHotspotLegend(null, null);
+  }
+
+  if (selectedEventId && lastEventImpact) {
+    renderEventImpactChart(lastEventImpact);
+  } else if (lastTimeseries && lastTimeseries.points && lastTimeseries.points.length) {
+    renderTimeseries(lastTimeseries.points, {
+      title: getEntityTitle(lastTimeseries.entity),
+      anomalies: lastTimeseries.anomalies,
+    });
   }
 }
 
@@ -1637,7 +1716,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       y: volume,
       type: "bar",
       name: "Volume",
-      marker: { color: "rgba(37, 99, 235, 0.18)" },
+      marker: { color: rgba(colors.accentRgb, 0.18) },
       yaxis: "y2",
     },
   ];
@@ -1665,7 +1744,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       type: "scatter",
       mode: "lines",
       name: "Baseline (mean)",
-      line: { color: "rgba(51, 65, 85, 0.55)", width: 1, dash: "dot" },
+      line: { color: colors.muted, width: 1, dash: "dot" },
       yaxis: "y",
     });
 
@@ -1683,7 +1762,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
   const layout = {
     title: {
       text: title || "Time Series",
-      font: { size: 12, color: "rgba(15, 23, 42, 0.85)" },
+      font: { size: 12, color: colors.text },
       x: 0.02,
     },
     paper_bgcolor: "rgba(0,0,0,0)",
@@ -1691,26 +1770,26 @@ function renderTimeseries(points, { title, anomalies } = {}) {
     margin: { l: 48, r: 48, t: 32, b: 34 },
     xaxis: {
       type: "date",
-      gridcolor: "rgba(15, 23, 42, 0.08)",
-      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
+      gridcolor: colors.panelBorder,
+      tickfont: { color: colors.muted, size: 10 },
     },
     yaxis: {
-      title: { text: "Speed (kph)", font: { size: 10, color: "rgba(51, 65, 85, 0.75)" } },
-      gridcolor: "rgba(15, 23, 42, 0.08)",
-      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
+      title: { text: "Speed (kph)", font: { size: 10, color: colors.muted } },
+      gridcolor: colors.panelBorder,
+      tickfont: { color: colors.muted, size: 10 },
     },
     yaxis2: {
-      title: { text: "Volume", font: { size: 10, color: "rgba(51, 65, 85, 0.75)" } },
+      title: { text: "Volume", font: { size: 10, color: colors.muted } },
       overlaying: "y",
       side: "right",
-      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
+      tickfont: { color: colors.muted, size: 10 },
       showgrid: false,
     },
     legend: {
       orientation: "h",
       x: 0.02,
       y: 1.12,
-      font: { size: 10, color: "rgba(51, 65, 85, 0.75)" },
+      font: { size: 10, color: colors.muted },
     },
   };
 
@@ -1749,7 +1828,7 @@ function renderEventImpactChart(impact) {
       y: volume,
       type: "bar",
       name: "Volume",
-      marker: { color: "rgba(37, 99, 235, 0.18)" },
+      marker: { color: rgba(colors.accentRgb, 0.18) },
       yaxis: "y2",
     },
   ];
@@ -1761,7 +1840,7 @@ function renderEventImpactChart(impact) {
       type: "scatter",
       mode: "lines",
       name: "Baseline mean",
-      line: { color: "rgba(51, 65, 85, 0.55)", width: 1, dash: "dot" },
+      line: { color: colors.muted, width: 1, dash: "dot" },
       yaxis: "y",
     });
   }
@@ -1776,39 +1855,39 @@ function renderEventImpactChart(impact) {
       x1: impact.event.end_time,
       y0: 0,
       y1: 1,
-      fillcolor: "rgba(239, 68, 68, 0.10)",
+      fillcolor: rgba(colors.dangerRgb, 0.1),
       line: { width: 0 },
     });
   }
 
   const title = impact.event ? `Event ${impact.event.event_id}` : "Event impact";
   const layout = {
-    title: { text: title, font: { size: 12, color: "rgba(15, 23, 42, 0.85)" }, x: 0.02 },
+    title: { text: title, font: { size: 12, color: colors.text }, x: 0.02 },
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     margin: { l: 48, r: 48, t: 32, b: 34 },
     xaxis: {
       type: "date",
-      gridcolor: "rgba(15, 23, 42, 0.08)",
-      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
+      gridcolor: colors.panelBorder,
+      tickfont: { color: colors.muted, size: 10 },
     },
     yaxis: {
-      title: { text: "Speed (kph)", font: { size: 10, color: "rgba(51, 65, 85, 0.75)" } },
-      gridcolor: "rgba(15, 23, 42, 0.08)",
-      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
+      title: { text: "Speed (kph)", font: { size: 10, color: colors.muted } },
+      gridcolor: colors.panelBorder,
+      tickfont: { color: colors.muted, size: 10 },
     },
     yaxis2: {
-      title: { text: "Volume", font: { size: 10, color: "rgba(51, 65, 85, 0.75)" } },
+      title: { text: "Volume", font: { size: 10, color: colors.muted } },
       overlaying: "y",
       side: "right",
-      tickfont: { color: "rgba(51, 65, 85, 0.75)", size: 10 },
+      tickfont: { color: colors.muted, size: 10 },
       showgrid: false,
     },
     legend: {
       orientation: "h",
       x: 0.02,
       y: 1.12,
-      font: { size: 10, color: "rgba(51, 65, 85, 0.75)" },
+      font: { size: 10, color: colors.muted },
     },
     shapes,
   };
@@ -1930,6 +2009,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   if (eventsLoaded) renderEvents(getFilteredEvents(events));
 
   impactSegmentsLayer.clearLayers();
+  lastEventImpact = null;
 
   const marker = eventMarkerById.get(eventId);
   if (centerMap && marker) {
@@ -1948,6 +2028,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   setStatus("Loading event impact...");
   fetchJson(url.toString())
     .then((impact) => {
+      lastEventImpact = impact;
       updateEventInfo(event, impact);
       renderEventImpactChart(impact);
 
@@ -1957,7 +2038,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
             radius: 5,
             color: themeColors().dangerHex,
             weight: 2,
-            fillColor: "rgba(239, 68, 68, 0.28)",
+            fillColor: rgba(themeColors().dangerRgb, 0.28),
             fillOpacity: 0.65,
           }).addTo(impactSegmentsLayer);
           m.bindPopup(`${seg.segment_id} (${Math.round(seg.distance_m)} m)`, { closeButton: false });
@@ -2000,7 +2081,7 @@ async function loadSegments() {
       radius: 5,
       color: themeColors().accentHex,
       weight: 2,
-      fillColor: "rgba(37, 99, 235, 0.22)",
+      fillColor: rgba(themeColors().accentRgb, 0.22),
       fillOpacity: 0.6,
     }).addTo(markers);
 
@@ -2251,7 +2332,7 @@ function renderEventMarkers(items) {
       radius: 6,
       color: themeColors().dangerHex,
       weight: 2,
-      fillColor: "rgba(239, 68, 68, 0.20)",
+      fillColor: rgba(themeColors().dangerRgb, 0.2),
       fillOpacity: 0.85,
     }).addTo(eventMarkers);
 
@@ -2272,6 +2353,7 @@ function applyEventsFilters() {
     const stillVisible = filtered.some((e) => e && e.event_id === selectedEventId);
     if (!stillVisible) {
       selectedEventId = null;
+      lastEventImpact = null;
       impactSegmentsLayer.clearLayers();
       lastEventsClearedReason = "Event selection cleared (filtered out).";
       updateEventInfo(null, null);
@@ -2355,6 +2437,7 @@ async function loadEvents() {
 
   impactSegmentsLayer.clearLayers();
   selectedEventId = null;
+  lastEventImpact = null;
   lastEventsClearedReason = null;
   updateEventInfo(null, null);
   populateEventsTypeOptions(events);
@@ -2370,6 +2453,7 @@ function clearEvents() {
   eventMarkerById.clear();
   impactSegmentsLayer.clearLayers();
   selectedEventId = null;
+  lastEventImpact = null;
   lastEventsClearedReason = null;
   updateEventInfo(null, null);
   if (eventsEl) eventsEl.textContent = "No events loaded.";
@@ -2479,6 +2563,7 @@ if (startEl) startEl.addEventListener("change", () => eventsWithinRangeEl?.check
 if (endEl) endEl.addEventListener("change", () => eventsWithinRangeEl?.checked && applyEventsFilters());
 
 applyLayoutFromState();
+initThemeToggle();
 applyOverlayVisibility();
 initLayoutResizers();
 initPanelCollapse();
