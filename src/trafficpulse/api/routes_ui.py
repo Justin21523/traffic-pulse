@@ -111,6 +111,10 @@ class UiStatus(BaseModel):
     generated_at_utc: datetime
     observations_minutes_available: list[int] = Field(default_factory=list)
     observations_last_timestamp_utc: datetime | None = None
+    dataset_version: str | None = None
+    live_loop_last_snapshot_timestamp: str | None = None
+    daily_backfill_last_date: str | None = None
+    last_error: str | None = None
 
 
 class DatasetFileInfo(BaseModel):
@@ -227,6 +231,32 @@ def _max_observation_timestamp(config_minutes: int) -> datetime | None:
     return _tail_csv_timestamp(obs_csv)
 
 
+def _read_state_value(path: Path, key: str) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get(key)
+    return str(value) if value else None
+
+
+def _dataset_version(processed_dir: Path, parquet_dir: Path, minutes_candidates: list[int]) -> str | None:
+    candidates: list[Path] = []
+    for minutes in minutes_candidates:
+        candidates.append(observations_csv_path(processed_dir, minutes))
+        candidates.append(observations_parquet_path(parquet_dir, minutes))
+    existing = [p for p in candidates if p.exists()]
+    if not existing:
+        return None
+    latest = max(existing, key=lambda p: p.stat().st_mtime)
+    stat = latest.stat()
+    return f"{latest.name}:{int(stat.st_mtime)}:{int(stat.st_size)}"
+
+
 @router.get("/ui/status", response_model=UiStatus)
 def ui_status() -> UiStatus:
     config = get_config()
@@ -254,10 +284,18 @@ def ui_status() -> UiStatus:
         if ts is not None and (last_ts is None or ts > last_ts):
             last_ts = ts
 
+    cache_dir = config.paths.cache_dir
+    live_loop_last_snapshot_timestamp = _read_state_value(cache_dir / "live_loop_state.json", "last_snapshot_timestamp")
+    daily_backfill_last_date = _read_state_value(cache_dir / "daily_backfill_state.json", "last_backfill_date")
+
     return UiStatus(
         generated_at_utc=datetime.now(timezone.utc),
         observations_minutes_available=available,
         observations_last_timestamp_utc=last_ts,
+        dataset_version=_dataset_version(processed_dir, parquet_dir, minutes_candidates),
+        live_loop_last_snapshot_timestamp=live_loop_last_snapshot_timestamp,
+        daily_backfill_last_date=daily_backfill_last_date,
+        last_error=None,
     )
 
 

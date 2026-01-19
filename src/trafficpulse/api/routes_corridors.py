@@ -7,6 +7,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from trafficpulse.api.schemas import EmptyReason, ItemsResponse
 from trafficpulse.analytics.corridors import (
     compute_corridor_reliability_rankings,
     corridor_metadata,
@@ -127,7 +128,10 @@ def list_corridors() -> list[CorridorMetadata]:
     return [CorridorMetadata(**record) for record in meta.to_dict(orient="records")]
 
 
-@router.get("/rankings/reliability/corridors", response_model=list[CorridorReliabilityRankingRow])
+@router.get(
+    "/rankings/reliability/corridors",
+    response_model=ItemsResponse[CorridorReliabilityRankingRow],
+)
 def corridor_reliability_rankings(
     start: Optional[str] = Query(default=None, description="Start datetime (ISO 8601)."),
     end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
@@ -140,7 +144,7 @@ def corridor_reliability_rankings(
     weight_mean_speed: Optional[float] = Query(default=None, ge=0),
     weight_speed_std: Optional[float] = Query(default=None, ge=0),
     weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
-) -> list[CorridorReliabilityRankingRow]:
+) -> ItemsResponse[CorridorReliabilityRankingRow]:
     config = get_config()
     corridors = _load_corridors_or_404()
 
@@ -175,7 +179,14 @@ def corridor_reliability_rankings(
         else:
             df = load_parquet(parquet_path) if config.warehouse.enabled and parquet_path.exists() else load_csv(csv_path)
             if df.empty:
-                return []
+                return ItemsResponse(
+                    items=[],
+                    reason=EmptyReason(
+                        code="no_observations",
+                        message="No observations found for the default time window.",
+                        suggestion="Run ingestion/build_dataset and try a wider time window.",
+                    ),
+                )
             if "timestamp" not in df.columns:
                 raise HTTPException(status_code=500, detail="observations dataset is missing 'timestamp' column.")
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
@@ -201,7 +212,14 @@ def corridor_reliability_rankings(
     else:
         observations = load_parquet(parquet_path) if config.warehouse.enabled and parquet_path.exists() else load_csv(csv_path)
         if observations.empty:
-            return []
+            return ItemsResponse(
+                items=[],
+                reason=EmptyReason(
+                    code="no_observations",
+                    message="No observations found for this time window.",
+                    suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
+                ),
+            )
         if "timestamp" not in observations.columns:
             raise HTTPException(status_code=500, detail="observations dataset is missing 'timestamp' column.")
         observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
@@ -210,7 +228,14 @@ def corridor_reliability_rankings(
         observations = observations[observations["segment_id"].isin(segment_ids)]
 
     if observations.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_observations",
+                message="No observations found for this time window.",
+                suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
+            ),
+        )
 
     try:
         spec = apply_reliability_overrides(
@@ -234,9 +259,18 @@ def corridor_reliability_rankings(
         limit=limit,
     )
     if ranked.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_rankings",
+                message="No corridors met the ranking criteria for this time window.",
+                suggestion="Try lowering min_samples or using a wider time window.",
+            ),
+        )
 
     meta = corridor_metadata(corridors)
     ranked = ranked.merge(meta, on="corridor_id", how="left")
     ranked = ranked.where(pd.notnull(ranked), None)
-    return [CorridorReliabilityRankingRow(**record) for record in ranked.to_dict(orient="records")]
+    return ItemsResponse(
+        items=[CorridorReliabilityRankingRow(**record) for record in ranked.to_dict(orient="records")]
+    )

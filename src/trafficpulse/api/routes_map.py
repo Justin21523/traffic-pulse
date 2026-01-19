@@ -12,6 +12,7 @@ from trafficpulse.analytics.reliability import (
     compute_reliability_metrics,
     reliability_spec_from_config,
 )
+from trafficpulse.api.schemas import EmptyReason, ItemsResponse
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
@@ -48,7 +49,7 @@ def _parse_bbox(bbox: str) -> tuple[float, float, float, float]:
     return min_lon, min_lat, max_lon, max_lat
 
 
-@router.get("/map/snapshot", response_model=list[SegmentSnapshot])
+@router.get("/map/snapshot", response_model=ItemsResponse[SegmentSnapshot])
 def get_map_snapshot(
     start: Optional[str] = Query(default=None, description="Start datetime (ISO 8601)."),
     end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
@@ -65,7 +66,7 @@ def get_map_snapshot(
     weight_mean_speed: Optional[float] = Query(default=None, ge=0),
     weight_speed_std: Optional[float] = Query(default=None, ge=0),
     weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
-) -> list[SegmentSnapshot]:
+) -> ItemsResponse[SegmentSnapshot]:
     config = get_config()
     processed_dir = config.paths.processed_dir
 
@@ -112,7 +113,14 @@ def get_map_snapshot(
             )
         segments = load_csv(segments_csv)
     if segments.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_segments",
+                message="No segments found in the selected area.",
+                suggestion="Try zooming out, removing bbox/city filters, or checking the segments dataset.",
+            ),
+        )
 
     if "segment_id" not in segments.columns or "lat" not in segments.columns or "lon" not in segments.columns:
         raise HTTPException(status_code=500, detail="segments dataset is missing required columns.")
@@ -189,7 +197,14 @@ def get_map_snapshot(
         observations = load_parquet(obs_parquet) if config.warehouse.enabled and obs_parquet.exists() else load_csv(obs_csv)
 
     if observations.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_observations",
+                message="No observations found for this time window.",
+                suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
+            ),
+        )
 
     if "timestamp" not in observations.columns or "segment_id" not in observations.columns:
         raise HTTPException(status_code=500, detail="observations dataset is missing required columns.")
@@ -197,12 +212,26 @@ def get_map_snapshot(
     observations["segment_id"] = observations["segment_id"].astype(str)
     observations = observations[observations["segment_id"].isin(segment_ids)]
     if observations.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_observations_for_segments",
+                message="No observations remain after filtering to segments in the selected area.",
+                suggestion="Try zooming out, removing bbox/city filters, or using a wider time window.",
+            ),
+        )
 
     observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
     observations = observations.dropna(subset=["timestamp"])
     if observations.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_valid_timestamps",
+                message="No valid timestamps found in observations for this window.",
+                suggestion="Check the observations dataset timestamp column and preprocessing steps.",
+            ),
+        )
 
     try:
         spec = apply_reliability_overrides(
@@ -222,18 +251,39 @@ def get_map_snapshot(
         end=to_utc(end_dt) if end_dt else None,
     )
     if metrics.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_metrics",
+                message="No hotspot metrics could be computed for this time window.",
+                suggestion="Try lowering min_samples or using a wider time window.",
+            ),
+        )
 
     merged = segments[["segment_id", "lat", "lon"]].merge(metrics, on="segment_id", how="inner")
     if merged.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_segments_after_merge",
+                message="No segments matched the computed metrics.",
+                suggestion="Try zooming out or using a wider time window.",
+            ),
+        )
 
     merged = merged[merged["n_samples"] > 0].copy()
     if merged.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_samples",
+                message="No segments have any samples in this time window.",
+                suggestion="Try using a wider time window or confirming ingestion is running.",
+            ),
+        )
 
     merged = merged.sort_values("segment_id").head(int(limit)).reset_index(drop=True)
     merged = merged.astype(object).where(pd.notnull(merged), None)
     merged["n_samples"] = pd.to_numeric(merged.get("n_samples"), errors="coerce").fillna(0).astype(int)
 
-    return [SegmentSnapshot(**record) for record in merged.to_dict(orient="records")]
+    return ItemsResponse(items=[SegmentSnapshot(**record) for record in merged.to_dict(orient="records")])

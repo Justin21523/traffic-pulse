@@ -104,7 +104,7 @@ python scripts/build_events.py --start 2026-01-01T00:00:00+08:00 --end 2026-01-0
 
 API endpoints:
 
-- `GET /events`
+- `GET /events` (returns `{items: [...], reason?: {...}}`)
 - `GET /events/{event_id}`
 - `GET /events/{event_id}/impact`
 
@@ -118,7 +118,7 @@ python scripts/build_event_impacts.py --limit-events 200
 
 The API can compute a map snapshot (mean speed / congestion frequency) for the current map bounds and time window:
 
-- `GET /map/snapshot`
+- `GET /map/snapshot` (returns `{items: [...], reason?: {...}}`)
 
 ## Dashboard Controls (Phase 6)
 
@@ -148,6 +148,10 @@ Compute basic reliability metrics (mean speed, speed variability, congestion fre
 python scripts/build_reliability_rankings.py --limit 200
 ```
 
+API endpoint:
+
+- `GET /rankings/reliability` (returns `{items: [...], reason?: {...}}`)
+
 ## Corridors (Phase 2)
 
 Corridors are defined as curated lists of segments (VD IDs).
@@ -162,7 +166,7 @@ python scripts/build_corridor_rankings.py --limit 200
 API endpoints:
 
 - `GET /corridors`
-- `GET /rankings/reliability/corridors`
+- `GET /rankings/reliability/corridors` (returns `{items: [...], reason?: {...}}`)
 - `GET /timeseries/corridors?corridor_id=...&start=...&end=...&minutes=...`
 
 ## Anomalies (Phase 2)

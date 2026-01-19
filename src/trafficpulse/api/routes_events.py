@@ -6,6 +6,7 @@ from typing import Optional
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
+from trafficpulse.api.schemas import EmptyReason, ItemsResponse
 from trafficpulse.ingestion.schemas import TrafficEvent
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
@@ -50,7 +51,7 @@ def _parse_bbox(bbox: str) -> tuple[float, float, float, float]:
     return min_lon, min_lat, max_lon, max_lat
 
 
-@router.get("/events", response_model=list[TrafficEvent])
+@router.get("/events", response_model=ItemsResponse[TrafficEvent])
 def list_events(
     start: Optional[str] = Query(default=None, description="Start datetime (ISO 8601)."),
     end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
@@ -59,7 +60,7 @@ def list_events(
     ),
     city: Optional[str] = Query(default=None),
     limit: int = Query(default=500, ge=1, le=5000),
-) -> list[TrafficEvent]:
+) -> ItemsResponse[TrafficEvent]:
     config = get_config()
     backend = duckdb_backend(config)
     parquet_path = events_parquet_path(config.warehouse.parquet_dir)
@@ -106,7 +107,14 @@ def list_events(
         df = _load_events_df()
 
     if df.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_events",
+                message="No events found for this time window.",
+                suggestion="Try a wider time window or confirm the events dataset is built.",
+            ),
+        )
 
     if "start_time" not in df.columns or "event_id" not in df.columns:
         raise HTTPException(status_code=500, detail="events dataset is missing required columns.")
@@ -137,6 +145,16 @@ def list_events(
             & (df["lon"] <= max_lon)
         ]
 
+    if df.empty:
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_events_in_filters",
+                message="No events match the current filters (time window / bbox / city).",
+                suggestion="Try zooming out, removing filters, or using a wider time window.",
+            ),
+        )
+
     df = df.sort_values("start_time", ascending=False).head(int(limit))
 
     keep_cols = [
@@ -157,7 +175,7 @@ def list_events(
         if col in df.columns
     ]
     df = df[keep_cols].where(pd.notnull(df), None)
-    return [TrafficEvent(**record) for record in df.to_dict(orient="records")]
+    return ItemsResponse(items=[TrafficEvent(**record) for record in df.to_dict(orient="records")])
 
 
 @router.get("/events/{event_id}", response_model=TrafficEvent)

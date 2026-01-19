@@ -4,6 +4,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Optional
+from urllib.parse import urlencode
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -31,8 +32,12 @@ def _matches_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
 
 
 def _cache_key(request: Request) -> str:
-    # Use full URL including query string; query ordering is preserved as sent by the client.
-    return str(request.url)
+    # Canonicalize query ordering so semantically-identical requests hit the same cache key.
+    base = request.url.path
+    items = sorted(request.query_params.multi_items())
+    if not items:
+        return base
+    return f"{base}?{urlencode(items, doseq=True)}"
 
 
 class TtlResponseCacheMiddleware(BaseHTTPMiddleware):
@@ -63,7 +68,11 @@ class TtlResponseCacheMiddleware(BaseHTTPMiddleware):
         if hit is not None:
             expires_at, body, status_code, headers = hit
             if now < expires_at:
-                return Response(content=body, status_code=status_code, headers=dict(headers), media_type=None)
+                remaining = max(0.0, expires_at - now)
+                out_headers = dict(headers)
+                out_headers["X-Cache"] = "HIT"
+                out_headers["X-Cache-TTL"] = str(int(remaining))
+                return Response(content=body, status_code=status_code, headers=out_headers, media_type=None)
             self._store.pop(key, None)
 
         response = await call_next(request)
@@ -89,7 +98,15 @@ class TtlResponseCacheMiddleware(BaseHTTPMiddleware):
 
         headers = [(k, v) for k, v in response.headers.items() if k.lower() != "set-cookie"]
         self._store[key] = (now + cfg.ttl_seconds, body_bytes, response.status_code, headers)
-        return Response(content=body_bytes, status_code=response.status_code, headers=dict(headers), media_type=response.media_type)
+        out_headers = dict(headers)
+        out_headers["X-Cache"] = "MISS"
+        out_headers["X-Cache-TTL"] = str(int(cfg.ttl_seconds))
+        return Response(
+            content=body_bytes,
+            status_code=response.status_code,
+            headers=out_headers,
+            media_type=response.media_type,
+        )
 
 
 class SimpleRateLimitMiddleware(BaseHTTPMiddleware):

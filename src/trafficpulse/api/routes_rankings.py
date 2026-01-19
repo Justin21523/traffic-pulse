@@ -12,6 +12,7 @@ from trafficpulse.analytics.reliability import (
     compute_reliability_rankings,
     reliability_spec_from_config,
 )
+from trafficpulse.api.schemas import EmptyReason, ItemsResponse
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
 from trafficpulse.storage.datasets import (
@@ -39,7 +40,7 @@ class ReliabilityRankingRow(BaseModel):
     reliability_score: Optional[float] = None
 
 
-@router.get("/rankings/reliability", response_model=list[ReliabilityRankingRow])
+@router.get("/rankings/reliability", response_model=ItemsResponse[ReliabilityRankingRow])
 def reliability_rankings(
     start: Optional[str] = Query(default=None, description="Start datetime (ISO 8601)."),
     end: Optional[str] = Query(default=None, description="End datetime (ISO 8601)."),
@@ -52,7 +53,7 @@ def reliability_rankings(
     weight_mean_speed: Optional[float] = Query(default=None, ge=0),
     weight_speed_std: Optional[float] = Query(default=None, ge=0),
     weight_congestion_frequency: Optional[float] = Query(default=None, ge=0),
-) -> list[ReliabilityRankingRow]:
+) -> ItemsResponse[ReliabilityRankingRow]:
     config = get_config()
     granularity_minutes = int(minutes or config.preprocessing.target_granularity_minutes)
 
@@ -96,7 +97,14 @@ def reliability_rankings(
         else:
             df = load_parquet(parquet_path) if config.warehouse.enabled and parquet_path.exists() else load_csv(csv_path)
             if df.empty:
-                return []
+                return ItemsResponse(
+                    items=[],
+                    reason=EmptyReason(
+                        code="no_observations",
+                        message="No observations found for the default time window.",
+                        suggestion="Run ingestion/build_dataset and try a wider time window.",
+                    ),
+                )
             if "timestamp" not in df.columns:
                 raise HTTPException(status_code=500, detail="observations dataset is missing 'timestamp' column.")
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
@@ -133,18 +141,39 @@ def reliability_rankings(
     else:
         observations = load_parquet(parquet_path) if config.warehouse.enabled and parquet_path.exists() else load_csv(csv_path)
         if observations.empty:
-            return []
+            return ItemsResponse(
+                items=[],
+                reason=EmptyReason(
+                    code="no_observations",
+                    message="No observations found for this time window.",
+                    suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
+                ),
+            )
         if "timestamp" not in observations.columns:
             raise HTTPException(status_code=500, detail="observations dataset is missing 'timestamp' column.")
         observations["timestamp"] = pd.to_datetime(observations["timestamp"], errors="coerce", utc=True)
         observations = observations.dropna(subset=["timestamp"])
 
     if observations.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_observations",
+                message="No observations found for this time window.",
+                suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
+            ),
+        )
 
     rankings = compute_reliability_rankings(observations, spec, start=start_dt, end=end_dt, limit=limit)
     if rankings.empty:
-        return []
+        return ItemsResponse(
+            items=[],
+            reason=EmptyReason(
+                code="no_rankings",
+                message="No segments met the ranking criteria for this time window.",
+                suggestion="Try lowering min_samples or using a wider time window.",
+            ),
+        )
 
     rankings = rankings.astype(object).where(pd.notnull(rankings), None)
-    return [ReliabilityRankingRow(**record) for record in rankings.to_dict(orient="records")]
+    return ItemsResponse(items=[ReliabilityRankingRow(**record) for record in rankings.to_dict(orient="records")])

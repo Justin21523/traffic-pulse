@@ -25,12 +25,19 @@ def test_ttl_cache_middleware_caches_get(monkeypatch) -> None:
         return {"calls": calls["n"]}
 
     client = TestClient(app)
-    assert client.get("/expensive").json() == {"calls": 1}
-    assert client.get("/expensive").json() == {"calls": 1}
+    first = client.get("/expensive?b=1&a=2")
+    assert first.headers.get("X-Cache") == "MISS"
+    assert first.json() == {"calls": 1}
+
+    second = client.get("/expensive?a=2&b=1")
+    assert second.headers.get("X-Cache") == "HIT"
+    assert second.json() == {"calls": 1}
     assert calls["n"] == 1
 
     now["t"] += 11.0
-    assert client.get("/expensive").json() == {"calls": 2}
+    third = client.get("/expensive?a=2&b=1")
+    assert third.headers.get("X-Cache") == "MISS"
+    assert third.json() == {"calls": 2}
 
 
 def test_rate_limit_middleware_blocks_after_threshold(monkeypatch) -> None:
@@ -52,4 +59,3 @@ def test_rate_limit_middleware_blocks_after_threshold(monkeypatch) -> None:
     resp = client.get("/limited")
     assert resp.status_code == 429
     assert "Retry-After" in resp.headers
-
