@@ -10,6 +10,9 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
+from trafficpulse.api.dataset_version import dataset_version
+from trafficpulse.settings import get_config
+
 
 @dataclass(frozen=True)
 class CacheConfig:
@@ -158,3 +161,36 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
 
         bucket.append(now)
         return await call_next(request)
+
+
+class DatasetVersionHeaderMiddleware(BaseHTTPMiddleware):
+    """Attach `X-Dataset-Version` to all responses (including cache hits).
+
+    The frontend uses this to detect data refreshes without polling heavyweight endpoints.
+    """
+
+    def __init__(self, app, *, header_name: str = "X-Dataset-Version", cache_seconds: float = 1.0) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(app)
+        self._header_name = str(header_name)
+        self._cache_seconds = float(cache_seconds)
+        self._cached_at = 0.0
+        self._cached_value: str | None = None
+
+    def _get_value(self) -> str | None:
+        now = time.time()
+        if self._cached_value is not None and now - self._cached_at < self._cache_seconds:
+            return self._cached_value
+        try:
+            value = dataset_version(get_config())
+        except Exception:
+            value = None
+        self._cached_at = now
+        self._cached_value = value
+        return value
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        response = await call_next(request)
+        value = self._get_value()
+        if value:
+            response.headers[self._header_name] = value
+        return response

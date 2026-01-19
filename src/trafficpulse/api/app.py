@@ -18,6 +18,7 @@ from trafficpulse.api.routes_ui import router as ui_router
 from trafficpulse.api.middleware import (
     CacheConfig,
     RateLimitConfig,
+    DatasetVersionHeaderMiddleware,
     SimpleRateLimitMiddleware,
     TtlResponseCacheMiddleware,
 )
@@ -55,6 +56,8 @@ def create_app() -> FastAPI:
                 include_paths=tuple(config.api.cache.include_paths),
             ),
         )
+
+    app.add_middleware(DatasetVersionHeaderMiddleware)
 
     app.add_middleware(
         CORSMiddleware,

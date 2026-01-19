@@ -7,7 +7,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from trafficpulse.api.schemas import EmptyReason, ItemsResponse
+from trafficpulse.api.schemas import EmptyReason, ItemsResponse, ReasonCode
 from trafficpulse.analytics.corridors import (
     compute_corridor_reliability_rankings,
     corridor_metadata,
@@ -170,7 +170,7 @@ def corridor_reliability_rankings(
                 return ItemsResponse(
                     items=[],
                     reason=EmptyReason(
-                        code="materialized_empty",
+                        code=ReasonCode.MATERIALIZED_EMPTY,
                         message="Materialized corridor rankings exist but are empty.",
                         suggestion="Re-run scripts/materialize_defaults.py after building datasets.",
                     ),
@@ -215,7 +215,7 @@ def corridor_reliability_rankings(
                 return ItemsResponse(
                     items=[],
                     reason=EmptyReason(
-                        code="no_observations",
+                        code=ReasonCode.NO_OBSERVATIONS,
                         message="No observations found for the default time window.",
                         suggestion="Run ingestion/build_dataset and try a wider time window.",
                     ),
@@ -248,7 +248,7 @@ def corridor_reliability_rankings(
             return ItemsResponse(
                 items=[],
                 reason=EmptyReason(
-                    code="no_observations",
+                    code=ReasonCode.NO_OBSERVATIONS,
                     message="No observations found for this time window.",
                     suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
                 ),
@@ -264,7 +264,7 @@ def corridor_reliability_rankings(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_observations",
+                code=ReasonCode.NO_OBSERVATIONS,
                 message="No observations found for this time window.",
                 suggestion="Try a wider time window, or confirm ingestion/build_dataset ran successfully.",
             ),
@@ -295,7 +295,7 @@ def corridor_reliability_rankings(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_rankings",
+                code=ReasonCode.NO_RANKINGS,
                 message="No corridors met the ranking criteria for this time window.",
                 suggestion="Try lowering min_samples or using a wider time window.",
             ),

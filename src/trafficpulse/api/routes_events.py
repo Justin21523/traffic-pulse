@@ -6,7 +6,7 @@ from typing import Optional
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
-from trafficpulse.api.schemas import EmptyReason, ItemsResponse
+from trafficpulse.api.schemas import EmptyReason, ItemsResponse, ReasonCode
 from trafficpulse.ingestion.schemas import TrafficEvent
 from trafficpulse.settings import get_config
 from trafficpulse.storage.backend import duckdb_backend
@@ -110,7 +110,7 @@ def list_events(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_events",
+                code=ReasonCode.NO_EVENTS,
                 message="No events found for this time window.",
                 suggestion="Try a wider time window or confirm the events dataset is built.",
             ),
@@ -149,7 +149,7 @@ def list_events(
         return ItemsResponse(
             items=[],
             reason=EmptyReason(
-                code="no_events_in_filters",
+                code=ReasonCode.NO_EVENTS_IN_FILTERS,
                 message="No events match the current filters (time window / bbox / city).",
                 suggestion="Try zooming out, removing filters, or using a wider time window.",
             ),
