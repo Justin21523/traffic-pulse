@@ -6,7 +6,7 @@ import argparse
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +46,17 @@ class LiveLoopState:
             json.dumps({"last_snapshot_timestamp": self.last_snapshot_timestamp}, indent=2) + "\n",
             encoding="utf-8",
         )
+
+
+def _write_ingest_status(path: Path, *, ok: bool, updated_files: list[str] | None = None, error: str | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "last_ingest_ok": bool(ok),
+        "updated_files": updated_files or [],
+        "last_error": error,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,6 +136,7 @@ def main() -> None:
     observations_out = observations_csv_path(processed_dir, config.preprocessing.source_granularity_minutes)
 
     state_path = Path(args.state_path)
+    ingest_status_path = state_path.parent / "ingest_status.json"
     state = LiveLoopState.load(state_path)
 
     iterations = 0
@@ -134,6 +146,7 @@ def main() -> None:
         segments = client.download_vd_metadata(cities=args.cities)
         if not segments.empty:
             save_csv(segments, segments_out)
+            _write_ingest_status(ingest_status_path, ok=True, updated_files=[str(segments_out)], error=None)
             print(f"[vd-live] segments refreshed: {len(segments):,} rows -> {segments_out}")
 
         while True:
@@ -141,34 +154,52 @@ def main() -> None:
             if args.max_iterations is not None and iterations > int(args.max_iterations):
                 break
 
-            snapshot = client.download_vd_live_snapshot(cities=args.cities)
-            if snapshot.empty:
-                print("[vd-live] empty snapshot; sleeping")
-                time.sleep(args.interval_seconds)
-                continue
+            try:
+                snapshot = client.download_vd_live_snapshot(cities=args.cities)
+                if snapshot.empty:
+                    print("[vd-live] empty snapshot; sleeping")
+                    time.sleep(args.interval_seconds)
+                    continue
 
-            snapshot_ts = str(snapshot["timestamp"].max())
-            if state.last_snapshot_timestamp == snapshot_ts:
-                print(f"[vd-live] unchanged snapshot {snapshot_ts}; skipping append")
-            else:
-                # Avoid appending older snapshots in case clocks/config mismatch.
-                if state.last_snapshot_timestamp is not None:
-                    if _parse_timestamp(snapshot_ts) <= _parse_timestamp(state.last_snapshot_timestamp):
-                        print(
-                            f"[vd-live] non-increasing snapshot {snapshot_ts} (last={state.last_snapshot_timestamp}); skipping"
-                        )
+                snapshot_ts = str(snapshot["timestamp"].max())
+                if state.last_snapshot_timestamp == snapshot_ts:
+                    print(f"[vd-live] unchanged snapshot {snapshot_ts}; skipping append")
+                else:
+                    # Avoid appending older snapshots in case clocks/config mismatch.
+                    if state.last_snapshot_timestamp is not None:
+                        if _parse_timestamp(snapshot_ts) <= _parse_timestamp(state.last_snapshot_timestamp):
+                            print(
+                                f"[vd-live] non-increasing snapshot {snapshot_ts} (last={state.last_snapshot_timestamp}); skipping"
+                            )
+                        else:
+                            append_csv(snapshot, observations_out)
+                            state = LiveLoopState(last_snapshot_timestamp=snapshot_ts)
+                            state.save(state_path)
+                            _write_ingest_status(
+                                ingest_status_path,
+                                ok=True,
+                                updated_files=[str(observations_out), str(state_path)],
+                                error=None,
+                            )
+                            print(
+                                f"[vd-live] appended {len(snapshot):,} rows at {snapshot_ts} -> {observations_out}"
+                            )
                     else:
                         append_csv(snapshot, observations_out)
                         state = LiveLoopState(last_snapshot_timestamp=snapshot_ts)
                         state.save(state_path)
-                        print(
-                            f"[vd-live] appended {len(snapshot):,} rows at {snapshot_ts} -> {observations_out}"
+                        _write_ingest_status(
+                            ingest_status_path,
+                            ok=True,
+                            updated_files=[str(observations_out), str(state_path)],
+                            error=None,
                         )
-                else:
-                    append_csv(snapshot, observations_out)
-                    state = LiveLoopState(last_snapshot_timestamp=snapshot_ts)
-                    state.save(state_path)
-                    print(f"[vd-live] appended {len(snapshot):,} rows at {snapshot_ts} -> {observations_out}")
+                        print(f"[vd-live] appended {len(snapshot):,} rows at {snapshot_ts} -> {observations_out}")
+            except Exception as exc:
+                _write_ingest_status(ingest_status_path, ok=False, updated_files=[], error=str(exc))
+                print(f"[vd-live] error: {exc}; sleeping")
+                time.sleep(args.interval_seconds)
+                continue
 
             time.sleep(args.interval_seconds)
     finally:

@@ -115,6 +115,8 @@ class UiStatus(BaseModel):
     live_loop_last_snapshot_timestamp: str | None = None
     daily_backfill_last_date: str | None = None
     last_error: str | None = None
+    last_ingest_ok: bool | None = None
+    updated_files: list[str] = Field(default_factory=list)
 
 
 class DatasetFileInfo(BaseModel):
@@ -287,6 +289,25 @@ def ui_status() -> UiStatus:
     cache_dir = config.paths.cache_dir
     live_loop_last_snapshot_timestamp = _read_state_value(cache_dir / "live_loop_state.json", "last_snapshot_timestamp")
     daily_backfill_last_date = _read_state_value(cache_dir / "daily_backfill_state.json", "last_backfill_date")
+    ingest_status_path = cache_dir / "ingest_status.json"
+    last_ingest_ok: bool | None = None
+    updated_files: list[str] = []
+    last_error = None
+    if ingest_status_path.exists():
+        try:
+            ingest_data = json.loads(ingest_status_path.read_text(encoding="utf-8"))
+        except Exception:
+            ingest_data = None
+        if isinstance(ingest_data, dict):
+            ok = ingest_data.get("last_ingest_ok")
+            if isinstance(ok, bool):
+                last_ingest_ok = ok
+            err = ingest_data.get("last_error")
+            if err:
+                last_error = str(err)
+            files = ingest_data.get("updated_files")
+            if isinstance(files, list):
+                updated_files = [str(x) for x in files if x]
 
     return UiStatus(
         generated_at_utc=datetime.now(timezone.utc),
@@ -295,7 +316,9 @@ def ui_status() -> UiStatus:
         dataset_version=_dataset_version(processed_dir, parquet_dir, minutes_candidates),
         live_loop_last_snapshot_timestamp=live_loop_last_snapshot_timestamp,
         daily_backfill_last_date=daily_backfill_last_date,
-        last_error=None,
+        last_error=last_error,
+        last_ingest_ok=last_ingest_ok,
+        updated_files=updated_files,
     )
 
 

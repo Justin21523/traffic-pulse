@@ -5,7 +5,7 @@ import _bootstrap  # noqa: F401
 import argparse
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -43,6 +43,17 @@ class DailyBackfillState:
             json.dumps({"last_backfill_date": self.last_backfill_date}, indent=2) + "\n",
             encoding="utf-8",
         )
+
+
+def _write_ingest_status(path: Path, *, ok: bool, updated_files: list[str] | None = None, error: str | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "last_ingest_ok": bool(ok),
+        "updated_files": updated_files or [],
+        "last_error": error,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -122,6 +133,7 @@ def main() -> None:
     today_start = datetime(today.year, today.month, today.day, tzinfo=tz)
 
     state_path = Path(args.state_path)
+    ingest_status_path = state_path.parent / "ingest_status.json"
     state = DailyBackfillState.load(state_path)
     if not args.force and state.last_backfill_date == yesterday.strftime("%Y-%m-%d"):
         print(f"[vd-backfill] already backfilled {state.last_backfill_date}; skipping")
@@ -136,6 +148,9 @@ def main() -> None:
         segments, observations = client.download_vd_historical(
             start=yesterday_start, end=today_start, cities=args.cities
         )
+    except Exception as exc:
+        _write_ingest_status(ingest_status_path, ok=False, updated_files=[], error=str(exc))
+        raise
     finally:
         client.close()
 
@@ -143,6 +158,7 @@ def main() -> None:
     print(f"[vd-backfill] observations rows: {len(observations):,}")
     if observations.empty:
         print("[vd-backfill] observations empty; not writing state")
+        _write_ingest_status(ingest_status_path, ok=False, updated_files=[], error="empty observations")
         return
 
     if args.dry_run:
@@ -154,6 +170,12 @@ def main() -> None:
 
     state = DailyBackfillState(last_backfill_date=yesterday.strftime("%Y-%m-%d"))
     state.save(state_path)
+    _write_ingest_status(
+        ingest_status_path,
+        ok=True,
+        updated_files=[str(segments_out), str(observations_out), str(state_path)],
+        error=None,
+    )
     print(f"[vd-backfill] done: {state.last_backfill_date} -> {observations_out}")
 
 
