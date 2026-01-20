@@ -219,8 +219,12 @@ python -m uvicorn --app-dir src trafficpulse.api.app:app --host 127.0.0.1 --port
 
 If you run the API, the static dashboard is served automatically:
 
-- `http://localhost:8000/`
-- `http://localhost:8000/web/` (alias)
+- If you run `python scripts/run_api.py` locally (default port 8000):
+  - `http://localhost:8000/`
+  - `http://localhost:8000/web/` (alias)
+- If you run via Docker Compose, the host port is `${TRAFFICPULSE_API_PORT:-8003}` (default 8003):
+  - `http://localhost:8003/`
+  - `http://localhost:8003/web/` (alias)
 
 The dashboard can also load Traffic Events (Phase 3) via the Events panel once `events` is built (CSV and/or Parquet).
 
@@ -232,7 +236,8 @@ python -m http.server 5173 --directory web
 
 Then open:
 
-- `http://localhost:5173/?api=http://localhost:8000`
+- `http://localhost:5173/?api=http://localhost:8000` (local API)
+- `http://localhost:5173/?api=http://localhost:8003` (Docker Compose default)
 
 ## Notes
 
