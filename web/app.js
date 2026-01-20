@@ -4,8 +4,8 @@ const API_BASE = (() => {
   const override = new URLSearchParams(window.location.search).get("api");
   if (override) return override.replace(/\/$/, "");
 
-  if (window.location.port === "8000") return window.location.origin;
-  return `${window.location.protocol}//${window.location.hostname}:8000`;
+  if (window.location.port === "8003") return window.location.origin;
+  return `${window.location.protocol}//${window.location.hostname}:8003`;
 })();
 
 const statusEl = document.getElementById("status");
@@ -22,6 +22,12 @@ const exportSnapshotButton = document.getElementById("export-snapshot");
 const qualityLinkEl = document.getElementById("link-quality");
 const diagnosticsLinkEl = document.getElementById("link-diagnostics");
 const alertsLinkEl = document.getElementById("link-alerts");
+
+const pipelineRefreshButton = document.getElementById("pipeline-refresh");
+const pipelineCopyEventsFixButton = document.getElementById("pipeline-copy-events-fix");
+const pipelineSummaryEl = document.getElementById("pipeline-summary");
+const pipelineTrendsChartEl = document.getElementById("pipeline-trends-chart");
+const pipelineAlertsEl = document.getElementById("pipeline-alerts");
 
 const dataHealthTextEl = document.getElementById("data-health-text");
 const dataHealthRefreshButton = document.getElementById("data-health-refresh");
@@ -76,10 +82,13 @@ const eventsWithinRangeEl = document.getElementById("events-within-range");
 const eventsSearchEl = document.getElementById("events-search");
 const clearEventsButton = document.getElementById("clear-events");
 const eventsHintEl = document.getElementById("events-hint");
+const eventsHintTitleEl = document.getElementById("events-hint-title");
 const eventsHintTextEl = document.getElementById("events-hint-text");
 const eventsRelaxFiltersButton = document.getElementById("events-relax-filters");
+const eventsCopyFixButton = document.getElementById("events-copy-fix");
 
 const hotspotMetricEl = document.getElementById("hotspot-metric");
+const hotspotColorModeEl = document.getElementById("hotspot-color-mode");
 const loadHotspotsButton = document.getElementById("load-hotspots");
 const clearHotspotsButton = document.getElementById("clear-hotspots");
 const hotspotInfoEl = document.getElementById("hotspot-info");
@@ -107,6 +116,7 @@ const chartHintActionsEl = document.getElementById("chart-hint-actions");
 
 const reliabilityThresholdEl = document.getElementById("reliability-threshold");
 const reliabilityMinSamplesEl = document.getElementById("reliability-min-samples");
+const reliabilityMinCoverageEl = document.getElementById("reliability-min-coverage");
 const reliabilityWeightMeanEl = document.getElementById("reliability-weight-mean");
 const reliabilityWeightStdEl = document.getElementById("reliability-weight-std");
 const reliabilityWeightCongEl = document.getElementById("reliability-weight-cong");
@@ -204,6 +214,7 @@ function themeColors() {
   const accentHex = getCssVar("--accent", "#2563eb");
   const accent2Hex = getCssVar("--accent-2", "#06b6d4");
   const dangerHex = getCssVar("--danger", "#ef4444");
+  const warnHex = getCssVar("--warn", "#f59e0b");
   const text = getCssVar("--text", "rgba(15, 23, 42, 0.92)");
   const muted = getCssVar("--muted", "rgba(51, 65, 85, 0.78)");
   const panelBorder = getCssVar("--panel-border", "rgba(15, 23, 42, 0.10)");
@@ -211,6 +222,7 @@ function themeColors() {
     accentHex,
     accent2Hex,
     dangerHex,
+    warnHex,
     text,
     muted,
     panelBorder,
@@ -275,10 +287,12 @@ function applyUrlStateOverrides() {
     start: params.get("start"),
     end: params.get("end"),
     hotspot_metric: params.get("hotspot_metric"),
+    hotspot_color_mode: params.get("hotspot_color_mode"),
     ranking_type: params.get("ranking_type"),
     ranking_limit: params.get("ranking_limit"),
     ranking_sort: params.get("ranking_sort"),
     min_samples: parseNumberParam(params.get("min_samples")),
+    min_coverage_pct: parseNumberParam(params.get("min_coverage_pct")),
     threshold_kph: parseNumberParam(params.get("threshold_kph")),
     entity: params.get("entity"),
     segment_id: params.get("segment_id"),
@@ -303,11 +317,20 @@ function applyUrlStateOverrides() {
 
   const minSamples = urlOverrides.min_samples;
   const threshold = urlOverrides.threshold_kph;
-  if (minSamples != null || threshold != null) {
+  const minCoverage = urlOverrides.min_coverage_pct;
+  if (minSamples != null || threshold != null || minCoverage != null) {
     uiState.overrides = uiState.overrides || {};
     uiState.overrides.reliability = uiState.overrides.reliability || {};
     if (minSamples != null) uiState.overrides.reliability.min_samples = Math.max(1, Math.trunc(minSamples));
     if (threshold != null) uiState.overrides.reliability.congestion_speed_threshold_kph = Math.max(1, threshold);
+    if (minCoverage != null) uiState.overrides.reliability.min_coverage_pct = clamp(minCoverage, 0, 100);
+  }
+
+  const colorMode = urlOverrides.hotspot_color_mode;
+  if (colorMode) {
+    uiState.hotspots = uiState.hotspots || {};
+    const mode = String(colorMode);
+    uiState.hotspots.colorMode = ["metric", "relative_drop_pct", "coverage_pct"].includes(mode) ? mode : "metric";
   }
 
   const entity = urlOverrides.entity;
@@ -338,10 +361,12 @@ function applyUrlOverridesToForm() {
       }
     }
 
-    if (hotspotMetricEl && urlOverrides.hotspot_metric) hotspotMetricEl.value = String(urlOverrides.hotspot_metric);
-    if (rankingTypeEl && urlOverrides.ranking_type) rankingTypeEl.value = String(urlOverrides.ranking_type);
-    if (rankingLimitEl && urlOverrides.ranking_limit) rankingLimitEl.value = String(urlOverrides.ranking_limit);
-    if (rankingSortEl && urlOverrides.ranking_sort) rankingSortEl.value = String(urlOverrides.ranking_sort);
+  if (hotspotMetricEl && urlOverrides.hotspot_metric) hotspotMetricEl.value = String(urlOverrides.hotspot_metric);
+  if (hotspotColorModeEl && urlOverrides.hotspot_color_mode)
+    hotspotColorModeEl.value = String(urlOverrides.hotspot_color_mode);
+  if (rankingTypeEl && urlOverrides.ranking_type) rankingTypeEl.value = String(urlOverrides.ranking_type);
+  if (rankingLimitEl && urlOverrides.ranking_limit) rankingLimitEl.value = String(urlOverrides.ranking_limit);
+  if (rankingSortEl && urlOverrides.ranking_sort) rankingSortEl.value = String(urlOverrides.ranking_sort);
   } finally {
     suppressUrlSync = false;
   }
@@ -355,9 +380,13 @@ function syncUrlFromUi() {
   const theme = String(getNested(uiState, "layout.theme", "product"));
   if (theme && theme !== "product") params.set("theme", theme);
 
-  if (entityTypeEl && entityTypeEl.value) params.set("entity", entityTypeEl.value);
-  if (selectedSegmentId) params.set("segment_id", String(selectedSegmentId));
-  if (selectedCorridorId) params.set("corridor_id", String(selectedCorridorId));
+  const entityType = entityTypeEl && entityTypeEl.value ? String(entityTypeEl.value) : "segment";
+  if (entityType) params.set("entity", entityType);
+  if (entityType === "corridor") {
+    if (selectedCorridorId) params.set("corridor_id", String(selectedCorridorId));
+  } else if (selectedSegmentId) {
+    params.set("segment_id", String(selectedSegmentId));
+  }
 
   if (minutesEl && minutesEl.value) params.set("minutes", String(minutesEl.value));
 
@@ -373,12 +402,16 @@ function syncUrlFromUi() {
   }
 
   if (hotspotMetricEl && hotspotMetricEl.value) params.set("hotspot_metric", String(hotspotMetricEl.value));
+  if (hotspotColorModeEl && hotspotColorModeEl.value && hotspotColorModeEl.value !== "metric")
+    params.set("hotspot_color_mode", String(hotspotColorModeEl.value));
   if (rankingTypeEl && rankingTypeEl.value) params.set("ranking_type", String(rankingTypeEl.value));
   if (rankingLimitEl && rankingLimitEl.value) params.set("ranking_limit", String(rankingLimitEl.value));
   if (rankingSortEl && rankingSortEl.value) params.set("ranking_sort", String(rankingSortEl.value));
 
   const minSamples = reliabilityMinSamplesEl ? parseIntValue(reliabilityMinSamplesEl.value) : null;
   if (minSamples != null) params.set("min_samples", String(minSamples));
+  const minCoverage = reliabilityMinCoverageEl ? parseNumberValue(reliabilityMinCoverageEl.value) : null;
+  if (minCoverage != null) params.set("min_coverage_pct", String(minCoverage));
   const threshold = reliabilityThresholdEl ? parseNumberValue(reliabilityThresholdEl.value) : null;
   if (threshold != null) params.set("threshold_kph", String(threshold));
 
@@ -434,6 +467,90 @@ let hotspotMarkerBySegmentId = new Map();
 let lastTrends = null;
 let trendsRefreshTimer = null;
 let weatherRefreshTimer = null;
+let pipelineRefreshTimer = null;
+let diagnosticsRefreshTimer = null;
+
+const dataHub = (() => {
+  const state = {
+    status: null,
+    trends: null,
+    alerts: null,
+    diagnostics: null,
+    weather: null,
+    lastUpdatedMs: {},
+  };
+  const listeners = [];
+
+  function notify(kind) {
+    for (const fn of listeners) {
+      try {
+        fn(state, kind);
+      } catch (err) {
+        // ignore
+      }
+    }
+  }
+
+  function onUpdate(fn) {
+    if (typeof fn === "function") listeners.push(fn);
+  }
+
+  function set(kind, value) {
+    state[kind] = value;
+    state.lastUpdatedMs[kind] = Date.now();
+    notify(kind);
+  }
+
+  async function refreshStatus() {
+    const data = await fetchJson(`${API_BASE}/ui/status`);
+    set("status", data);
+    return data;
+  }
+
+  async function refreshTrends() {
+    const data = await fetchJson(`${API_BASE}/ui/trends?window_hours=24`);
+    set("trends", data);
+    return data;
+  }
+
+  async function refreshAlerts() {
+    const data = await fetchJson(`${API_BASE}/ui/alerts?tail=200&window_hours=24`);
+    set("alerts", data);
+    return data;
+  }
+
+  async function refreshDiagnostics() {
+    const data = await fetchJson(`${API_BASE}/ui/diagnostics`);
+    set("diagnostics", data);
+    return data;
+  }
+
+  async function refreshWeather() {
+    const data = await fetchJson(`${API_BASE}/ui/weather/latest?limit=1`);
+    set("weather", data);
+    return data;
+  }
+
+  async function refreshAll({ includeStatus } = { includeStatus: false }) {
+    const jobs = [refreshTrends(), refreshAlerts(), refreshDiagnostics(), refreshWeather()];
+    if (includeStatus) jobs.unshift(refreshStatus());
+    await Promise.allSettled(jobs);
+  }
+
+  function start({ includeStatus } = { includeStatus: false }) {
+    refreshAll({ includeStatus: Boolean(includeStatus) });
+    if (trendsRefreshTimer) window.clearInterval(trendsRefreshTimer);
+    trendsRefreshTimer = window.setInterval(() => refreshTrends().catch(() => {}), 60 * 1000);
+    if (weatherRefreshTimer) window.clearInterval(weatherRefreshTimer);
+    weatherRefreshTimer = window.setInterval(() => refreshWeather().catch(() => {}), 10 * 60 * 1000);
+    if (pipelineRefreshTimer) window.clearInterval(pipelineRefreshTimer);
+    pipelineRefreshTimer = window.setInterval(() => refreshAlerts().catch(() => {}), 2 * 60 * 1000);
+    if (diagnosticsRefreshTimer) window.clearInterval(diagnosticsRefreshTimer);
+    diagnosticsRefreshTimer = window.setInterval(() => refreshDiagnostics().catch(() => {}), 5 * 60 * 1000);
+  }
+
+  return { state, onUpdate, set, refreshAll, refreshStatus, refreshTrends, refreshAlerts, refreshDiagnostics, refreshWeather, start };
+})();
 
 let timeseriesAbortController = null;
 let anomaliesAbortController = null;
@@ -501,12 +618,25 @@ function formatCacheBadge(entry) {
   return `${entry.status}${ttlPart}`;
 }
 
+function formatCacheDetail(kind, entry) {
+  if (!entry || !entry.status) return `${kind}: —`;
+  const ttl = entry.ttl != null && entry.ttl !== "" ? `${entry.ttl}s` : "—";
+  const ageSeconds = entry.atMs ? Math.max(0, (Date.now() - entry.atMs) / 1000) : null;
+  const age = ageSeconds != null ? formatAge(ageSeconds) : "—";
+  return `${kind}: ${entry.status} ttl=${ttl} age=${age}`;
+}
+
 function updateCacheIndicator() {
   if (!cacheIndicatorEl) return;
   const h = formatCacheBadge(lastCacheInfo.hotspots);
   const r = formatCacheBadge(lastCacheInfo.rankings);
   const e = formatCacheBadge(lastCacheInfo.events);
   cacheIndicatorEl.textContent = `Cache · H:${h} R:${r} E:${e}`;
+  cacheIndicatorEl.title = [
+    formatCacheDetail("hotspots", lastCacheInfo.hotspots),
+    formatCacheDetail("rankings", lastCacheInfo.rankings),
+    formatCacheDetail("events", lastCacheInfo.events),
+  ].join("\n");
 }
 
 function formatRateLimitSummary(summary) {
@@ -576,9 +706,88 @@ function updateTrendIndicator(trends) {
   if (title) trendIndicatorEl.title = title;
 }
 
+function formatPipelineSummary() {
+  const status = dataHub.state.status;
+  const trends = dataHub.state.trends;
+  const alerts = dataHub.state.alerts;
+  const diag = dataHub.state.diagnostics;
+
+  const parts = [];
+  if (status && status.observations_last_timestamp_utc) parts.push(`obs_last=${status.observations_last_timestamp_utc}`);
+  if (status && status.last_ingest_ok != null) parts.push(`ingest_ok=${String(status.last_ingest_ok)}`);
+  if (status && status.ingest_consecutive_failures != null) parts.push(`failures=${status.ingest_consecutive_failures}`);
+  if (status && status.ingest_backoff_seconds != null) parts.push(`backoff=${status.ingest_backoff_seconds}s`);
+
+  const sum = trends && trends.summary ? trends.summary : null;
+  if (sum) {
+    if (sum.vd_ok_total != null) parts.push(`vd_ok_24h=${sum.vd_ok_total}`);
+    if (sum.vd_error_total != null) parts.push(`vd_err_24h=${sum.vd_error_total}`);
+    if (sum.rate_limit_429_total != null) parts.push(`429_24h=${sum.rate_limit_429_total}`);
+    if (sum.max_backoff_seconds_24h != null) parts.push(`max_backoff_24h=${sum.max_backoff_seconds_24h}s`);
+  }
+
+  if (diag && diag.event_hotspot_links && diag.event_hotspot_links.exists === false) parts.push("event_links=missing");
+
+  const byCategory = alerts && alerts.summary && alerts.summary.by_category ? alerts.summary.by_category : null;
+  if (byCategory) {
+    parts.push(`alerts(network=${byCategory.network || 0}, rate_limit=${byCategory.rate_limit || 0}, data=${byCategory.data || 0})`);
+  }
+  return parts.length ? parts.join(" • ") : "—";
+}
+
+function renderPipelineTrendsChart() {
+  if (!pipelineTrendsChartEl) return;
+  if (typeof Plotly === "undefined") {
+    pipelineTrendsChartEl.textContent = "Plotly not available.";
+    return;
+  }
+
+  const trends = dataHub.state.trends;
+  const buckets = trends && Array.isArray(trends.buckets) ? trends.buckets : [];
+  if (!buckets.length) {
+    pipelineTrendsChartEl.textContent = "No trend data.";
+    return;
+  }
+
+  const x = buckets.map((b) => b.hour_start_utc);
+  const ok = buckets.map((b) => Number(b.vd_ok || 0));
+  const err = buckets.map((b) => Number(b.vd_error || 0));
+  const rl = buckets.map((b) => Number(b.rate_limit_429 || 0));
+
+  const colors = themeColors();
+  const data = [
+    { x, y: ok, type: "scatter", mode: "lines", name: "VD ok", line: { color: colors.accentHex } },
+    { x, y: err, type: "scatter", mode: "lines", name: "VD error", line: { color: colors.dangerHex } },
+    { x, y: rl, type: "scatter", mode: "lines", name: "429", line: { color: colors.warnHex } },
+  ];
+  const layout = {
+    margin: { l: 34, r: 10, t: 10, b: 28 },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    xaxis: { showgrid: false, tickfont: { size: 10 } },
+    yaxis: { showgrid: true, gridcolor: "rgba(15,23,42,0.06)", tickfont: { size: 10 } },
+    legend: { orientation: "h", y: -0.25, x: 0 },
+    font: { size: 11, color: colors.text },
+  };
+  Plotly.react(pipelineTrendsChartEl, data, layout, { displayModeBar: false, responsive: true });
+}
+
+function renderPipelineAlerts() {
+  if (!pipelineAlertsEl) return;
+  const alerts = dataHub.state.alerts;
+  const lines = alerts && Array.isArray(alerts.lines) ? alerts.lines : [];
+  pipelineAlertsEl.textContent = lines.slice(-10).join("\n") || "No alerts.";
+}
+
+function renderPipelinePanel() {
+  if (pipelineSummaryEl) pipelineSummaryEl.textContent = formatPipelineSummary();
+  renderPipelineTrendsChart();
+  renderPipelineAlerts();
+}
+
 async function refreshTrends() {
   try {
-    const data = await fetchJson(`${API_BASE}/ui/trends?window_hours=24`);
+    const data = await dataHub.refreshTrends();
     lastTrends = data;
     updateTrendIndicator(data);
   } catch (err) {
@@ -598,7 +807,7 @@ function formatWeatherRow(row) {
 async function refreshWeatherLatest() {
   if (!weatherIndicatorEl) return;
   try {
-    const data = await fetchJson(`${API_BASE}/ui/weather/latest?limit=1`);
+    const data = await dataHub.refreshWeather();
     const items = data && Array.isArray(data.items) ? data.items : [];
     const row = items.length ? items[0] : null;
     weatherIndicatorEl.textContent = `Weather: ${formatWeatherRow(row)}`;
@@ -607,6 +816,24 @@ async function refreshWeatherLatest() {
     // best-effort
   }
 }
+
+dataHub.onUpdate((state, kind) => {
+  if (kind === "trends") {
+    lastTrends = state.trends;
+    updateTrendIndicator(state.trends);
+  }
+  if (kind === "weather") {
+    const items = state.weather && Array.isArray(state.weather.items) ? state.weather.items : [];
+    const row = items.length ? items[0] : null;
+    if (weatherIndicatorEl) {
+      weatherIndicatorEl.textContent = `Weather: ${formatWeatherRow(row)}`;
+      if (row && row.timestamp) weatherIndicatorEl.title = `Weather timestamp: ${row.timestamp}`;
+    }
+  }
+  if (["trends", "alerts", "diagnostics", "status"].includes(kind)) {
+    renderPipelinePanel();
+  }
+});
 
 function recordCache(kind, cache) {
   if (!cache) return;
@@ -697,6 +924,7 @@ function applyUiStatus(status) {
   if (!status || typeof status !== "object") return;
   lastUiStatusPrev = lastUiStatus;
   lastUiStatus = status;
+  dataHub.set("status", status);
   const last = status.observations_last_timestamp_utc;
   const minutes = status.observations_minutes_available || [];
   latestObservationIso = last || null;
@@ -706,6 +934,7 @@ function applyUiStatus(status) {
   updateTopbarDetail(status);
   updateRateIndicator(status);
   applyHealthBadge(status);
+  renderPipelinePanel();
 
   applyFollowLatestWindow();
 
@@ -739,7 +968,7 @@ function applyUiStatus(status) {
 async function refreshUiStatus() {
   if (!freshnessPillEl) return;
   try {
-    const status = await fetchJson(`${API_BASE}/ui/status`);
+    const status = await dataHub.refreshStatus();
     applyUiStatus(status);
   } catch (err) {
     setFreshness({ label: "Error", detail: `Failed to load /ui/status: ${err.message}`, level: "bad" });
@@ -825,6 +1054,26 @@ function setHintVisible(el, visible) {
   else el.classList.add("hidden");
 }
 
+function setEventsHint({ title, text, showRelaxFilters, showCopyFix } = {}) {
+  if (eventsHintTitleEl) eventsHintTitleEl.textContent = title || "Notice";
+  if (eventsHintTextEl) eventsHintTextEl.textContent = text || "";
+  if (eventsRelaxFiltersButton) eventsRelaxFiltersButton.style.display = showRelaxFilters ? "" : "none";
+  if (eventsCopyFixButton) eventsCopyFixButton.style.display = showCopyFix ? "" : "none";
+  setHintVisible(eventsHintEl, Boolean(text));
+}
+
+function isLikelyDatasetMissing(reason) {
+  if (!reason || typeof reason !== "object") return false;
+  const code = String(reason.code || "").toLowerCase();
+  const msg = String(reason.message || "").toLowerCase();
+  if (!code && !msg) return false;
+  if (code.includes("dataset_missing")) return true;
+  if (code.includes("file_missing")) return true;
+  if (code.includes("missing") && msg.includes("events")) return true;
+  if (msg.includes("events.csv") && (msg.includes("missing") || msg.includes("not found"))) return true;
+  return false;
+}
+
 function setChartHint({ title, text, actions } = {}) {
   if (!chartHintEl) return;
   if (!text) {
@@ -897,12 +1146,8 @@ function buildFixCommands({ hasSegments, hasObservations, hasEvents, hasCorridor
     commands.push("python scripts/build_corridor_rankings.py --limit 200");
   }
   if (!hasEvents) {
-    const endIso = latestObservationIso || new Date().toISOString();
-    const endDt = new Date(endIso);
-    const startDt = new Date(endDt.getTime() - 6 * 60 * 60 * 1000);
-    commands.push(
-      `python scripts/build_events.py --start ${startDt.toISOString()} --end ${endDt.toISOString()} --cities Taipei`
-    );
+    commands.push("systemctl --user start trafficpulse-events.service");
+    commands.push("journalctl --user -u trafficpulse-events.service -n 120 --no-pager");
   }
   commands.push("python scripts/materialize_defaults.py --window-hours 24");
   return commands;
@@ -916,12 +1161,12 @@ async function refreshDataHealth() {
   let status = null;
   let diagnostics = null;
   try {
-    status = await fetchJson(`${API_BASE}/ui/status`);
+    status = await dataHub.refreshStatus();
   } catch (err) {
     // ignore
   }
   try {
-    diagnostics = await fetchJson(`${API_BASE}/ui/diagnostics`);
+    diagnostics = await dataHub.refreshDiagnostics();
   } catch (err) {
     // ignore
   }
@@ -998,7 +1243,7 @@ async function refreshDataHealth() {
   const suggestions = [];
   if (!hasSegments) suggestions.push("Missing segments.csv (run ingestion + build_dataset).");
   if (!hasObservations) suggestions.push("Missing observations CSV (run ingestion + build_dataset).");
-  if (!hasEvents) suggestions.push("Missing events.csv (run build_events.py).");
+  if (!hasEvents) suggestions.push("Missing events.csv (run trafficpulse-events.service).");
   if (!hasCorridors) suggestions.push("corridors.csv missing (optional; needed for corridor rankings).");
   if (status && status.last_ingest_ok === false) suggestions.push(`Ingestion error: ${status.last_error || "unknown"}`);
 
@@ -1165,7 +1410,11 @@ function applyThemeToVisuals() {
   });
 
   if (hotspotsLoaded && hotspotRows && hotspotRows.length) {
-    renderHotspots(hotspotRows, hotspotMetricEl ? hotspotMetricEl.value : "mean_speed_kph");
+    renderHotspots(
+      hotspotRows,
+      hotspotMetricEl ? hotspotMetricEl.value : "mean_speed_kph",
+      hotspotColorModeEl?.value || "metric"
+    );
   } else {
     updateHotspotLegend(null, null);
   }
@@ -1428,7 +1677,8 @@ async function refreshLiveNow({ silent, skipStatus } = { silent: false, skipStat
     await loadTimeseries();
   }
 
-  if (eventsLoaded && showEvents) {
+  const allowEventsLiveReload = Boolean(eventsAutoEl && eventsAutoEl.checked);
+  if (eventsLoaded && showEvents && allowEventsLiveReload) {
     await loadEvents();
   }
 
@@ -1440,12 +1690,7 @@ function initLivePanel() {
 
   applyLiveStateToForm();
   refreshUiStatus();
-  refreshTrends();
-  refreshWeatherLatest();
-  if (trendsRefreshTimer) window.clearInterval(trendsRefreshTimer);
-  trendsRefreshTimer = window.setInterval(() => refreshTrends(), 60 * 1000);
-  if (weatherRefreshTimer) window.clearInterval(weatherRefreshTimer);
-  weatherRefreshTimer = window.setInterval(() => refreshWeatherLatest(), 10 * 60 * 1000);
+  dataHub.start({ includeStatus: false });
   startFreshnessTicker();
   startStatusStream();
   updateCacheIndicator();
@@ -1499,6 +1744,7 @@ function reliabilityOverridesFromForm() {
   return {
     congestion_speed_threshold_kph: parseNumberValue(reliabilityThresholdEl.value),
     min_samples: parseIntValue(reliabilityMinSamplesEl.value),
+    min_coverage_pct: parseNumberValue(reliabilityMinCoverageEl?.value),
     weight_mean_speed: parseNumberValue(reliabilityWeightMeanEl.value),
     weight_speed_std: parseNumberValue(reliabilityWeightStdEl.value),
     weight_congestion_frequency: parseNumberValue(reliabilityWeightCongEl.value),
@@ -1535,6 +1781,7 @@ function applyReliabilityOverrides(url) {
   if (o.congestion_speed_threshold_kph != null)
     url.searchParams.set("congestion_speed_threshold_kph", String(o.congestion_speed_threshold_kph));
   if (o.min_samples != null) url.searchParams.set("min_samples", String(o.min_samples));
+  if (o.min_coverage_pct != null) url.searchParams.set("min_coverage_pct", String(o.min_coverage_pct));
   if (o.weight_mean_speed != null) url.searchParams.set("weight_mean_speed", String(o.weight_mean_speed));
   if (o.weight_speed_std != null) url.searchParams.set("weight_speed_std", String(o.weight_speed_std));
   if (o.weight_congestion_frequency != null)
@@ -1643,6 +1890,7 @@ function applyStateToForm(state) {
   if (rel) {
     setInputValue(reliabilityThresholdEl, rel.congestion_speed_threshold_kph);
     setInputValue(reliabilityMinSamplesEl, rel.min_samples);
+    setInputValue(reliabilityMinCoverageEl, rel.min_coverage_pct);
     setInputValue(reliabilityWeightMeanEl, rel.weight_mean_speed);
     setInputValue(reliabilityWeightStdEl, rel.weight_speed_std);
     setInputValue(reliabilityWeightCongEl, rel.weight_congestion_frequency);
@@ -2089,16 +2337,20 @@ function updateEventInfo(event, impact, linksInfo) {
   if (!event) {
     if (lastEventsClearedReason) {
       eventInfoEl.textContent = `No event selected.\n${lastEventsClearedReason}`;
-      if (eventsHintTextEl) eventsHintTextEl.textContent = lastEventsClearedReason;
-      setHintVisible(eventsHintEl, true);
+      setEventsHint({
+        title: "Selection hidden by filters",
+        text: lastEventsClearedReason,
+        showRelaxFilters: true,
+        showCopyFix: false,
+      });
     } else {
       eventInfoEl.textContent = "No event selected.";
-      setHintVisible(eventsHintEl, false);
+      setEventsHint({ text: "" });
     }
     return;
   }
   lastEventsClearedReason = null;
-  setHintVisible(eventsHintEl, false);
+  setEventsHint({ text: "" });
 
   const parts = [];
   parts.push(`ID: ${event.event_id}`);
@@ -2292,6 +2544,10 @@ function metricLabel(metric) {
       return "Speed std";
     case "congestion_frequency":
       return "Congestion frequency";
+    case "relative_drop_pct":
+      return "Drop vs baseline";
+    case "coverage_pct":
+      return "Coverage";
     default:
       return metric;
   }
@@ -2301,6 +2557,7 @@ function formatMetricValue(metric, value) {
   if (value == null || !Number.isFinite(Number(value))) return "—";
   const num = Number(value);
   if (metric === "congestion_frequency") return `${Math.round(num * 100)}%`;
+  if (metric === "relative_drop_pct" || metric === "coverage_pct") return `${num.toFixed(1)}%`;
   return `${num.toFixed(1)}`;
 }
 
@@ -2327,20 +2584,24 @@ function updateHotspotLegend(metric, range) {
   }
 
   hotspotLegendEl.classList.remove("hidden");
-  const unit = metric === "congestion_frequency" ? "%" : "kph";
+  const unit = metric === "congestion_frequency" || metric === "relative_drop_pct" || metric === "coverage_pct" ? "%" : "kph";
   const hint =
-    metric === "congestion_frequency"
-      ? "low → high"
-      : metric === "speed_std_kph"
-        ? "low variance → high variance"
-        : "slow → fast";
-  hotspotLegendTitleEl.textContent = `Hotspots · ${metricLabel(metric)} (${unit}) · ${hint}`;
+    metric === "coverage_pct"
+      ? "low coverage → high coverage"
+      : metric === "relative_drop_pct"
+        ? "low drop → high drop"
+        : metric === "congestion_frequency"
+          ? "rare → frequent"
+          : metric === "speed_std_kph"
+            ? "stable → volatile"
+            : "slow → fast";
+  hotspotLegendTitleEl.textContent = `Hotspots · ${metricLabel(metric)} · ${hint} (${unit})`;
 
   const colors = themeColors();
   const accent = `rgba(${colors.accent2Rgb[0]}, ${colors.accent2Rgb[1]}, ${colors.accent2Rgb[2]}, 0.92)`;
   const danger = `rgba(${colors.dangerRgb[0]}, ${colors.dangerRgb[1]}, ${colors.dangerRgb[2]}, 0.92)`;
   const gradient =
-    metric === "congestion_frequency"
+    metric === "congestion_frequency" || metric === "coverage_pct" || metric === "relative_drop_pct"
       ? `linear-gradient(90deg, ${accent}, ${danger})`
       : `linear-gradient(90deg, ${danger}, ${accent})`;
   hotspotLegendBarEl.style.background = gradient;
@@ -2349,6 +2610,7 @@ function updateHotspotLegend(metric, range) {
   const toLabel = (value) => {
     if (!Number.isFinite(Number(value))) return "—";
     if (metric === "congestion_frequency") return `${Math.round(Number(value) * 100)}%`;
+    if (metric === "relative_drop_pct" || metric === "coverage_pct") return `${Number(value).toFixed(1)}%`;
     return `${Number(value).toFixed(1)}`;
   };
 
@@ -2361,7 +2623,7 @@ function updateHotspotLegend(metric, range) {
   if (hotspotLegendMaxEl) hotspotLegendMaxEl.textContent = maxText;
 }
 
-function renderHotspots(rows, metric) {
+function renderHotspots(rows, metric, colorMode = "metric") {
   hotspotsLayer.clearLayers();
   hotspotMarkerBySegmentId = new Map();
   if (!rows || !rows.length) {
@@ -2372,11 +2634,12 @@ function renderHotspots(rows, metric) {
   }
   updateHotspotsHint({ empty: false });
 
+  const key = colorMode === "metric" ? metric : String(colorMode || metric);
   const colors = themeColors();
   const accent = colors.accent2Rgb;
   const danger = colors.dangerRgb;
-  const range = computeMetricRange(rows, metric);
-  updateHotspotLegend(metric, range);
+  const range = computeMetricRange(rows, key);
+  updateHotspotLegend(key, range);
 
   let rendered = 0;
   for (const row of rows) {
@@ -2385,12 +2648,15 @@ function renderHotspots(rows, metric) {
     const lon = Number(row.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
 
-    const raw = row[metric];
+    const raw = row[key];
     const value = raw == null ? null : Number(raw);
     let color = "rgba(15, 23, 42, 0.12)";
     if (value != null && Number.isFinite(value)) {
-      if (metric === "congestion_frequency") {
+      if (key === "congestion_frequency") {
         color = lerpColor(accent, danger, clamp(value, 0, 1));
+      } else if (key === "relative_drop_pct" || key === "coverage_pct") {
+        const t = (value - range.min) / (range.max - range.min);
+        color = lerpColor(accent, danger, t);
       } else {
         const t = (value - range.min) / (range.max - range.min);
         color = lerpColor(danger, accent, t);
@@ -2407,8 +2673,8 @@ function renderHotspots(rows, metric) {
 
     hotspotMarkerBySegmentId.set(String(row.segment_id), marker);
 
-    const label = metricLabel(metric);
-    const formatted = formatMetricValue(metric, value);
+    const label = metricLabel(key);
+    const formatted = formatMetricValue(key, value);
     const extras = [];
     if (row.baseline_median_speed_kph != null && Number.isFinite(Number(row.baseline_median_speed_kph))) {
       extras.push(`base=${Number(row.baseline_median_speed_kph).toFixed(1)}kph`);
@@ -2429,15 +2695,9 @@ function renderHotspots(rows, metric) {
     rendered += 1;
   }
 
-  const minText =
-    metric === "congestion_frequency"
-      ? `${Math.round(range.min * 100)}%`
-      : `${Number(range.min).toFixed(1)}`;
-  const maxText =
-    metric === "congestion_frequency"
-      ? `${Math.round(range.max * 100)}%`
-      : `${Number(range.max).toFixed(1)}`;
-  updateHotspotInfo(`Loaded ${rendered} segments.\nMetric: ${metricLabel(metric)}\nRange: ${minText} → ${maxText}`);
+  const minText = formatMetricValue(key, range.min);
+  const maxText = formatMetricValue(key, range.max);
+  updateHotspotInfo(`Loaded ${rendered} segments.\nColor: ${metricLabel(key)}\nRange: ${minText} → ${maxText}`);
 }
 
 function clearHotspots() {
@@ -2455,6 +2715,7 @@ async function loadHotspots() {
   setStatus("Loading hotspots...");
 
   const metric = hotspotMetricEl.value || "mean_speed_kph";
+  const colorMode = hotspotColorModeEl ? String(hotspotColorModeEl.value || "metric") : "metric";
   const url = new URL(`${API_BASE}/map/snapshot`);
   url.searchParams.set("include_baseline", "true");
   url.searchParams.set("include_quality", "true");
@@ -2488,7 +2749,7 @@ async function loadHotspots() {
       hotspotRows = cached.items;
       lastHotspotsReason = cached.reason || null;
       hotspotsLoaded = true;
-      renderHotspots(hotspotRows, metric);
+      renderHotspots(hotspotRows, metric, hotspotColorModeEl?.value || "metric");
       setStatus(`Hotspots loaded from cache (${hotspotRows.length} rows, cached_at=${cached.at_utc || "?"}).`);
       return;
     }
@@ -2501,13 +2762,17 @@ async function loadHotspots() {
   }
 
   hotspotsLoaded = true;
-  renderHotspots(hotspotRows, metric);
+  renderHotspots(hotspotRows, metric, colorMode);
   setStatus(`Hotspots loaded (${hotspotRows.length} rows).`);
 }
 
 function applyHotspotStateToForm() {
   if (!hotspotAutoEl) return;
   hotspotAutoEl.checked = Boolean(getNested(uiState, "hotspots.autoReload", false));
+  if (hotspotColorModeEl) {
+    const mode = String(getNested(uiState, "hotspots.colorMode", hotspotColorModeEl.value || "metric"));
+    hotspotColorModeEl.value = ["metric", "relative_drop_pct", "coverage_pct"].includes(mode) ? mode : "metric";
+  }
 }
 
 function initHotspotAutoReload() {
@@ -2518,6 +2783,13 @@ function initHotspotAutoReload() {
     uiState.hotspots.autoReload = Boolean(hotspotAutoEl.checked);
     saveUiState(uiState);
   });
+  if (hotspotColorModeEl) {
+    hotspotColorModeEl.addEventListener("change", () => {
+      uiState.hotspots = uiState.hotspots || {};
+      uiState.hotspots.colorMode = String(hotspotColorModeEl.value || "metric");
+      saveUiState(uiState);
+    });
+  }
 
   let timer = null;
   let inFlight = false;
@@ -3217,19 +3489,21 @@ function renderRankings(items, type) {
 
     if (type === "corridors") {
       const name = row.corridor_name ? ` - ${row.corridor_name}` : "";
-      idEl.textContent = `${row.corridor_id}${name}`;
+      const corridorId = String(row.corridor_id);
+      idEl.textContent = `${corridorId}${name}`;
       el.addEventListener("click", () => {
         Array.from(rankingsEl.querySelectorAll(".ranking-row")).forEach((n) => n.classList.remove("selected"));
         el.classList.add("selected");
-        selectCorridor(row.corridor_id, { centerMap: true });
+        selectCorridor(corridorId, { centerMap: true });
         loadTimeseries();
       });
     } else {
-      idEl.textContent = row.segment_id;
+      const segmentId = String(row.segment_id);
+      idEl.textContent = segmentId;
       el.addEventListener("click", () => {
         Array.from(rankingsEl.querySelectorAll(".ranking-row")).forEach((n) => n.classList.remove("selected"));
         el.classList.add("selected");
-        selectSegment(row.segment_id, { centerMap: true });
+        selectSegment(segmentId, { centerMap: true });
         loadTimeseries();
       });
     }
@@ -3405,9 +3679,14 @@ function renderEvents(items) {
   eventsEl.innerHTML = "";
   if (!items || !items.length) {
     const parts = [];
-    if (lastEventsReason && lastEventsReason.message) parts.push(lastEventsReason.message);
-    parts.push("No events returned.");
-    if (lastEventsReason && lastEventsReason.suggestion) parts.push(lastEventsReason.suggestion);
+    if (Array.isArray(events) && events.length) {
+      parts.push("No events match the current filters.");
+      parts.push("Try turning off “Only within current time range” or clearing the search box.");
+    } else {
+      if (lastEventsReason && lastEventsReason.message) parts.push(lastEventsReason.message);
+      parts.push("No events returned.");
+      if (lastEventsReason && lastEventsReason.suggestion) parts.push(lastEventsReason.suggestion);
+    }
     eventsEl.textContent = parts.join("\n");
     return;
   }
@@ -3491,7 +3770,32 @@ async function loadEvents() {
       return;
     }
     eventsLoaded = false;
-    eventsEl.textContent = "Failed to load events. Run scripts/build_events.py and check ingestion.events config.";
+    eventsEl.textContent = "Failed to load events.";
+
+    let diag = dataHub.state.diagnostics;
+    if (!diag) {
+      try {
+        diag = await dataHub.refreshDiagnostics();
+      } catch (e) {
+        diag = null;
+      }
+    }
+    const eventsExists = Boolean(diag?.events_csv?.exists);
+    const linksExists = Boolean(diag?.event_hotspot_links?.exists);
+
+    const hintParts = [];
+    if (!eventsExists) hintParts.push("events.csv is missing (likely upstream rate-limited).");
+    else hintParts.push("events.csv exists, but the /events request failed (API/network issue).");
+    if (!linksExists) hintParts.push("event_hotspot_links.csv is not available yet.");
+    hintParts.push("Wait for the next hourly events timer, or run the events service manually.");
+    hintParts.push("Use “Copy events fix” to copy the command.");
+
+    setEventsHint({
+      title: "Events dataset unavailable",
+      text: hintParts.join(" "),
+      showRelaxFilters: false,
+      showCopyFix: true,
+    });
     setStatus(`Failed to load events: ${err.message}`);
     return;
   }
@@ -3506,6 +3810,49 @@ async function loadEvents() {
   updateEventInfo(null, null, null);
   populateEventsTypeOptions(events);
   applyEventsFilters();
+  if (!selectedEventId && showEvents && showImpact) {
+    const candidates = getFilteredEvents(events);
+    const first = candidates && candidates.length ? candidates[0] : events.length ? events[0] : null;
+    if (first && first.event_id) {
+      selectEvent(String(first.event_id), { centerMap: true });
+    }
+  }
+  if (!events.length) {
+    if (isLikelyDatasetMissing(lastEventsReason)) {
+      let diag = dataHub.state.diagnostics;
+      if (!diag) {
+        try {
+          diag = await dataHub.refreshDiagnostics();
+        } catch (e) {
+          diag = null;
+        }
+      }
+      const eventsExists = Boolean(diag?.events_csv?.exists);
+      const linksExists = Boolean(diag?.event_hotspot_links?.exists);
+      const hintParts = [];
+      if (!eventsExists) hintParts.push("events.csv is missing (likely upstream rate-limited).");
+      if (!linksExists) hintParts.push("event_hotspot_links.csv is not available yet.");
+      hintParts.push("Wait for the next hourly events timer, or run the events service manually.");
+      hintParts.push("Use “Copy events fix” to copy the command.");
+      setEventsHint({
+        title: "Events dataset unavailable",
+        text: hintParts.join(" "),
+        showRelaxFilters: false,
+        showCopyFix: true,
+      });
+    } else {
+      const msgParts = [];
+      if (lastEventsReason?.message) msgParts.push(lastEventsReason.message);
+      msgParts.push("No events were returned for the current bbox/time window.");
+      if (lastEventsReason?.suggestion) msgParts.push(lastEventsReason.suggestion);
+      setEventsHint({
+        title: "No events returned",
+        text: msgParts.join(" "),
+        showRelaxFilters: true,
+        showCopyFix: false,
+      });
+    }
+  }
   setStatus(`Loaded ${events.length} events (${getFilteredEvents(events).length} shown).`);
 }
 
@@ -3521,7 +3868,7 @@ function clearEvents() {
   lastEventImpact = null;
   lastEventsClearedReason = null;
   updateEventInfo(null, null, null);
-  setHintVisible(eventsHintEl, false);
+  setEventsHint({ text: "" });
   if (eventsEl) eventsEl.textContent = "No events loaded.";
   setStatus("Events cleared.");
 }
@@ -3576,7 +3923,7 @@ function initEventsPanel() {
       uiState.events.type = "all";
       saveUiState(uiState);
       applyEventsFilters();
-      setHintVisible(eventsHintEl, false);
+      setEventsHint({ text: "" });
       setStatus("Events filters relaxed.");
     });
   }
@@ -3638,10 +3985,13 @@ loadRankingsButton.addEventListener("click", loadRankings);
 loadEventsButton.addEventListener("click", loadEvents);
 loadHotspotsButton.addEventListener("click", loadHotspots);
 clearHotspotsButton.addEventListener("click", clearHotspots);
-hotspotMetricEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value));
+hotspotMetricEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value, hotspotColorModeEl?.value || "metric"));
+if (hotspotColorModeEl)
+  hotspotColorModeEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value, hotspotColorModeEl.value));
 if (rankingSearchEl) rankingSearchEl.addEventListener("input", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
 if (rankingSortEl) rankingSortEl.addEventListener("change", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
 hotspotMetricEl.addEventListener("change", scheduleUrlSync);
+if (hotspotColorModeEl) hotspotColorModeEl.addEventListener("change", scheduleUrlSync);
 if (minutesEl) minutesEl.addEventListener("change", scheduleUrlSync);
 if (rankingTypeEl) rankingTypeEl.addEventListener("change", scheduleUrlSync);
 if (rankingLimitEl) rankingLimitEl.addEventListener("change", scheduleUrlSync);
@@ -3683,6 +4033,23 @@ if (dataHealthCopyCommandsButton)
     const cmds = buildFixCommands(health || {});
     await copyText(cmds.join("\n"));
     setStatus("Fix commands copied to clipboard.");
+  });
+if (pipelineRefreshButton)
+  pipelineRefreshButton.addEventListener("click", async () => {
+    await dataHub.refreshAll({ includeStatus: true });
+    renderPipelinePanel();
+    setStatus("Pipeline refreshed.");
+  });
+const eventsFixCommand = `systemctl --user start trafficpulse-events.service\njournalctl --user -u trafficpulse-events.service -n 120 --no-pager`;
+if (pipelineCopyEventsFixButton)
+  pipelineCopyEventsFixButton.addEventListener("click", async () => {
+    await copyText(eventsFixCommand);
+    setStatus("Events fix command copied to clipboard.");
+  });
+if (eventsCopyFixButton)
+  eventsCopyFixButton.addEventListener("click", async () => {
+    await copyText(eventsFixCommand);
+    setStatus("Events fix command copied to clipboard.");
   });
 
 loadUiDefaultsFromApi().then((defaults) => {

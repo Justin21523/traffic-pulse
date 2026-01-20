@@ -179,6 +179,16 @@ body.theme-policy .ranking-row:hover {
   transform: translateY(1px);
 }
 
+.pipeline-chart {
+  height: 160px;
+  width: 100%;
+  margin: 10px 0;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+}
+
 .topbar-live {
   display: flex;
   flex-direction: column;

@@ -77,6 +77,22 @@
           </div>
         </div>
 
+        <div class="panel" data-panel-id="pipeline">
+          <div class="panel-title">Pipeline</div>
+          <div class="panel-body">
+            <div class="button-row">
+              <button class="button secondary" id="pipeline-refresh">Refresh pipeline</button>
+              <button class="button secondary" id="pipeline-copy-events-fix">Copy events fix</button>
+            </div>
+            <div class="segment-info mono" id="pipeline-summary">Loading...</div>
+            <div class="pipeline-chart" id="pipeline-trends-chart"></div>
+            <div class="hint-box" id="pipeline-alerts-box">
+              <div class="hint-title">Recent alerts</div>
+              <pre class="mono pre" id="pipeline-alerts">Loading...</pre>
+            </div>
+          </div>
+        </div>
+
         <div class="panel" data-panel-id="live">
           <div class="panel-title">Live</div>
           <div class="panel-body">
@@ -137,6 +153,10 @@
                 <label class="field">
                   <span class="label">Min samples</span>
                   <input id="reliability-min-samples" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min coverage (%)</span>
+                  <input id="reliability-min-coverage" type="number" min="0" max="100" step="1" />
                 </label>
                 <label class="field">
                   <span class="label">Weight: mean speed</span>
@@ -302,6 +322,14 @@
                 <option value="speed_std_kph">Speed std (kph)</option>
               </select>
             </label>
+            <label class="field">
+              <span class="label">Color</span>
+              <select id="hotspot-color-mode">
+                <option value="metric" selected>Metric</option>
+                <option value="relative_drop_pct">Drop vs baseline (%)</option>
+                <option value="coverage_pct">Coverage (%)</option>
+              </select>
+            </label>
             <label class="check">
               <input type="checkbox" id="hotspot-auto" />
               <span>Auto reload on map move</span>
@@ -393,12 +421,13 @@
 	            <button class="button secondary" id="clear-events">Clear events</button>
 	            <div class="events" id="events"></div>
 	            <div class="hint-box hidden" id="events-hint">
-	              <div class="hint-title">Selection hidden by filters</div>
+	              <div class="hint-title" id="events-hint-title">Selection hidden by filters</div>
 	              <div class="hint-text" id="events-hint-text">
 	                The selected event is no longer visible under the current filters.
 	              </div>
 	              <div class="button-row">
 	                <button class="button secondary" id="events-relax-filters">Relax filters</button>
+                  <button class="button secondary" id="events-copy-fix">Copy events fix</button>
 	              </div>
 	            </div>
 	            <div class="segment-info" id="event-info">No event selected.</div>
@@ -415,7 +444,7 @@
               <li>Use the Events panel to load incident markers and impact summaries.</li>
               <li>Keyboard: WASD/Arrows pan, +/- zoom, L load, R reload, F focus, N anomalies, ? shortcuts.</li>
               <li>
-                You can override API base URL with <span class="mono">?api=http://localhost:8000</span>.
+                You can override API base URL with <span class="mono">?api=http://localhost:8003</span>.
               </li>
             </ul>
           </div>
