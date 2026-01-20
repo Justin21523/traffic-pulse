@@ -1,0 +1,14 @@
+[Unit]
+Description=TrafficPulse events pipeline (TDX events + event-hotspot links)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/web-projects/traffic-pulse
+ExecStartPre=/usr/bin/bash -lc 'until /usr/bin/docker info >/dev/null 2>&1; do sleep 5; done'
+ExecStart=/usr/bin/bash -lc '\
+  set +e; \
+  /usr/bin/docker compose run --rm --no-deps --build api python scripts/build_events_all.py --fetch-tdx-window-hours 3 || true; \
+  /usr/bin/docker compose run --rm --no-deps --build api python scripts/build_event_links_and_alerts.py || true; \
+'

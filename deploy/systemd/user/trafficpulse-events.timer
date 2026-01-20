@@ -1,0 +1,11 @@
+[Unit]
+Description=TrafficPulse events timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=60min
+Persistent=true
+Unit=trafficpulse-events.service
+
+[Install]
+WantedBy=timers.target
