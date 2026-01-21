@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrafficPulse · Pipeline</title>
+
+    <link rel="stylesheet" href="/styles.css?v=20260120" />
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+  </head>
+  <body data-page="pipeline">
+    <header class="topbar">
+      <div class="title">
+        <h1>TrafficPulse</h1>
+        <div class="subtitle">VD-based congestion exploration (MVP)</div>
+      </div>
+      <nav class="topnav" id="topnav" aria-label="Pages">
+        <a class="topnav-item" href="/overview/" data-page="overview">Overview</a>
+        <a class="topnav-item" href="/explore/" data-page="explore">Explore</a>
+        <a class="topnav-item" href="/timeseries/" data-page="timeseries">Time Series</a>
+        <a class="topnav-item" href="/events/" data-page="events">Events</a>
+        <a class="topnav-item" href="/rankings/" data-page="rankings">Rankings</a>
+        <a class="topnav-item" href="/pipeline/" data-page="pipeline">Pipeline</a>
+      </nav>
+      <div class="topbar-actions">
+        <label class="topbar-field" title="Visual style">
+          <span class="topbar-label">Theme</span>
+          <select id="theme-select" class="topbar-select">
+            <option value="product" selected>Product</option>
+            <option value="policy">Policy / Deck</option>
+          </select>
+        </label>
+        <div class="topbar-live" title="Live status">
+          <span class="topbar-pill" id="live-indicator">Polling</span>
+          <span class="topbar-small mono" id="live-detail">Data: —</span>
+          <span class="topbar-small mono" id="rate-indicator">Rate: —</span>
+          <span class="topbar-small mono" id="trend-indicator">Trend: —</span>
+          <span class="topbar-small mono" id="weather-indicator">Weather: —</span>
+          <span class="topbar-small mono" id="cache-indicator">Cache: —</span>
+        </div>
+        <div class="topbar-links" title="Quick diagnostics">
+          <a class="topbar-link mono" id="link-quality" href="#" target="_blank" rel="noreferrer">Quality</a>
+          <a class="topbar-link mono" id="link-diagnostics" href="#" target="_blank" rel="noreferrer">Diagnostics</a>
+          <a class="topbar-link mono" id="link-alerts" href="#" target="_blank" rel="noreferrer">Alerts</a>
+        </div>
+        <button class="topbar-button secondary" id="copy-link" type="button" title="Copy a shareable dashboard link">
+          Copy link
+        </button>
+        <button class="topbar-button secondary" id="export-snapshot" type="button" title="Download a JSON snapshot">
+          Export JSON
+        </button>
+      </div>
+      <div class="status" id="status">Ready.</div>
+    </header>
+
+    <main class="layout">
+      <section class="sidebar" id="sidebar">
+        <div class="panel" data-panel-id="data-source">
+          <div class="panel-title">Data Source</div>
+          <div class="panel-body small">
+            API: <span class="mono" id="api-base"></span>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="data-health">
+          <div class="panel-title">Data Health</div>
+          <div class="panel-body">
+            <div class="button-row">
+              <button class="button secondary" id="data-health-refresh">Refresh health</button>
+              <button class="button secondary" id="data-health-copy-commands">Copy fix commands</button>
+              <button class="button secondary" id="export-segments-csv" type="button">Export segments CSV</button>
+              <button class="button secondary" id="export-corridors-csv" type="button">Export corridors CSV</button>
+            </div>
+            <div class="hint-box hidden" id="data-health-hint">
+              <div class="hint-title">Suggested actions</div>
+              <div class="hint-text" id="data-health-hint-text"></div>
+            </div>
+            <pre class="mono pre" id="data-health-text">Loading...</pre>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="pipeline">
+          <div class="panel-title">Pipeline</div>
+          <div class="panel-body">
+            <div class="button-row">
+              <button class="button secondary" id="pipeline-refresh">Refresh pipeline</button>
+              <button class="button secondary" id="pipeline-copy-events-fix">Copy events fix</button>
+            </div>
+            <div class="segment-info mono" id="pipeline-summary">Loading...</div>
+            <div class="pipeline-chart" id="pipeline-trends-chart"></div>
+            <div class="hint-box" id="pipeline-alerts-box">
+              <div class="hint-title">Recent alerts</div>
+              <pre class="mono pre" id="pipeline-alerts">Loading...</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="live">
+          <div class="panel-title">Live</div>
+          <div class="panel-body">
+            <div class="pill-row">
+              <span class="pill" id="freshness-pill">Unknown</span>
+              <span class="muted" id="freshness-text">Loading status...</span>
+            </div>
+            <label class="field">
+              <span class="label">Auto refresh</span>
+              <label class="check">
+                <input type="checkbox" id="live-auto-refresh" />
+                <span>Refresh hotspots + current chart</span>
+              </label>
+            </label>
+            <label class="field">
+              <span class="label">Refresh interval (seconds)</span>
+              <input id="live-interval-seconds" type="number" min="5" step="1" value="60" />
+            </label>
+            <div class="button-row">
+              <button class="button secondary" id="live-refresh">Refresh now</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="controls">
+          <div class="panel-title">Controls</div>
+          <div class="panel-body">
+            <details open class="details">
+              <summary class="details-summary">Overlays</summary>
+              <div class="details-body">
+                <label class="check">
+                  <input type="checkbox" id="toggle-anomalies" checked />
+                  <span>Show anomalies on chart</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="toggle-hotspots" checked />
+                  <span>Show hotspots overlay</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="toggle-events" checked />
+                  <span>Show events overlay</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="toggle-impact" checked />
+                  <span>Show impacted segments overlay</span>
+                </label>
+              </div>
+            </details>
+
+            <details class="details">
+              <summary class="details-summary">Analytics Overrides</summary>
+              <div class="details-body">
+                <div class="subhead">Reliability</div>
+                <label class="field">
+                  <span class="label">Congestion speed threshold (kph)</span>
+                  <input id="reliability-threshold" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min samples</span>
+                  <input id="reliability-min-samples" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min coverage (%)</span>
+                  <input id="reliability-min-coverage" type="number" min="0" max="100" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Weight: mean speed</span>
+                  <input id="reliability-weight-mean" type="number" min="0" step="0.05" />
+                </label>
+                <label class="field">
+                  <span class="label">Weight: speed std</span>
+                  <input id="reliability-weight-std" type="number" min="0" step="0.05" />
+                </label>
+                <label class="field">
+                  <span class="label">Weight: congestion frequency</span>
+                  <input id="reliability-weight-cong" type="number" min="0" step="0.05" />
+                </label>
+
+                <div class="subhead">Anomalies</div>
+                <label class="field">
+                  <span class="label">Rolling window (points)</span>
+                  <input id="anomalies-window" type="number" min="2" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Z threshold</span>
+                  <input id="anomalies-z" type="number" min="0.1" step="0.1" />
+                </label>
+                <label class="field">
+                  <span class="label">Direction</span>
+                  <select id="anomalies-direction">
+                    <option value="low" selected>Low (slowdown)</option>
+                    <option value="high">High (speed-up)</option>
+                    <option value="both">Both</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="label">Max gap (minutes)</span>
+                  <input id="anomalies-max-gap" type="number" min="0" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min event points</span>
+                  <input id="anomalies-min-event-points" type="number" min="1" step="1" />
+                </label>
+
+                <div class="subhead">Event impact</div>
+                <label class="field">
+                  <span class="label">Radius (meters)</span>
+                  <input id="impact-radius" type="number" min="1" step="10" />
+                </label>
+                <label class="field">
+                  <span class="label">Max segments</span>
+                  <input id="impact-max-segments" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Baseline window (minutes)</span>
+                  <input id="impact-baseline-minutes" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Recovery horizon (minutes)</span>
+                  <input id="impact-recovery-minutes" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Recovery ratio</span>
+                  <input id="impact-recovery-ratio" type="number" min="0.1" max="1" step="0.05" />
+                </label>
+                <label class="field">
+                  <span class="label">Speed weighting</span>
+                  <select id="impact-weighting">
+                    <option value="volume" selected>Volume</option>
+                    <option value="equal">Equal</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="label">End time fallback (minutes)</span>
+                  <input id="impact-end-fallback" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min baseline points</span>
+                  <input id="impact-min-baseline" type="number" min="1" step="1" />
+                </label>
+                <label class="field">
+                  <span class="label">Min event points</span>
+                  <input id="impact-min-event" type="number" min="1" step="1" />
+                </label>
+              </div>
+            </details>
+
+            <div class="button-row">
+              <button class="button" id="apply-settings">Apply settings</button>
+              <button class="button secondary" id="reset-settings">Reset defaults</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="segment">
+          <div class="panel-title">Segment</div>
+          <div class="panel-body">
+            <label class="field">
+              <span class="label">Search</span>
+              <input id="segment-search" type="text" placeholder="Filter by name or ID" />
+            </label>
+            <label class="field">
+              <span class="label">Select</span>
+              <select id="segment-select"></select>
+            </label>
+            <div class="segment-info" id="segment-info">No segment selected.</div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="corridor">
+          <div class="panel-title">Corridor</div>
+          <div class="panel-body">
+            <label class="field">
+              <span class="label">Select</span>
+              <select id="corridor-select"></select>
+            </label>
+            <div class="segment-info" id="corridor-info">No corridor selected.</div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="time-range">
+          <div class="panel-title">Time Range</div>
+          <div class="panel-body">
+            <label class="field">
+              <span class="label">Entity</span>
+              <select id="entity-type">
+                <option value="segment" selected>Segment</option>
+                <option value="corridor">Corridor</option>
+              </select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="follow-latest" />
+              <span>Follow latest observations (live)</span>
+            </label>
+            <label class="field">
+              <span class="label">Live window (hours)</span>
+              <input id="live-window-hours" type="number" min="1" step="1" value="6" />
+            </label>
+            <label class="field">
+              <span class="label">Start (local)</span>
+              <input id="start" type="datetime-local" />
+            </label>
+            <label class="field">
+              <span class="label">End (local)</span>
+              <input id="end" type="datetime-local" />
+            </label>
+            <label class="field">
+              <span class="label">Granularity</span>
+              <select id="minutes">
+                <option value="5">5-min</option>
+                <option value="15" selected>15-min</option>
+                <option value="60">Hourly</option>
+              </select>
+            </label>
+            <button class="button" id="load">Load timeseries</button>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="hotspots">
+          <div class="panel-title">Hotspots</div>
+          <div class="panel-body">
+            <label class="field">
+              <span class="label">Metric</span>
+              <select id="hotspot-metric">
+                <option value="mean_speed_kph" selected>Mean speed (kph)</option>
+                <option value="congestion_frequency">Congestion frequency</option>
+                <option value="speed_std_kph">Speed std (kph)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">Color</span>
+              <select id="hotspot-color-mode">
+                <option value="metric" selected>Metric</option>
+                <option value="relative_drop_pct">Drop vs baseline (%)</option>
+                <option value="coverage_pct">Coverage (%)</option>
+              </select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="hotspot-auto" />
+              <span>Auto reload on map move</span>
+            </label>
+            <button class="button" id="load-hotspots">Load hotspots (map bounds)</button>
+            <button class="button secondary" id="clear-hotspots">Clear hotspots</button>
+            <div class="segment-info" id="hotspot-info">No hotspots loaded.</div>
+            <div class="hint-box hidden" id="hotspot-hint">
+              <div class="hint-title">No hotspots returned</div>
+              <div class="hint-text" id="hotspot-hint-text">
+                Try increasing the time window or lowering the minimum samples threshold.
+              </div>
+              <div class="button-row">
+                <button class="button secondary" id="hotspot-quick-min-samples">Set Min samples = 1</button>
+                <button class="button secondary" id="hotspot-quick-24h">Use 24h window</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel-id="rankings">
+          <div class="panel-title">Rankings</div>
+          <div class="panel-body">
+            <label class="field">
+              <span class="label">Type</span>
+              <select id="ranking-type">
+                <option value="segments" selected>Segments (unreliable)</option>
+                <option value="corridors">Corridors (unreliable)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">Search</span>
+              <input id="ranking-search" type="text" placeholder="Filter by ID/name" />
+            </label>
+            <label class="field">
+              <span class="label">Sort</span>
+              <select id="ranking-sort">
+                <option value="rank" selected>Rank</option>
+                <option value="score_desc">Score (desc)</option>
+                <option value="mean_speed_asc">Mean speed (asc)</option>
+                <option value="congestion_desc">Congestion freq (desc)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="label">Limit</span>
+              <select id="ranking-limit">
+                <option value="20" selected>Top 20</option>
+                <option value="50">Top 50</option>
+                <option value="100">Top 100</option>
+              </select>
+            </label>
+            <button class="button" id="load-rankings">Load rankings</button>
+            <div class="rankings" id="rankings"></div>
+            <div class="hint-box hidden" id="rankings-hint">
+              <div class="hint-title">No rankings returned</div>
+              <div class="hint-text" id="rankings-hint-text">
+                Try increasing the time window or lowering the minimum samples threshold.
+              </div>
+              <div class="button-row">
+                <button class="button secondary" id="rankings-quick-min-samples">Set Min samples = 1</button>
+                <button class="button secondary" id="rankings-quick-24h">Use 24h window</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+	        <div class="panel" data-panel-id="events">
+	          <div class="panel-title">Events</div>
+	          <div class="panel-body">
+	            <button class="button" id="load-events">Load events (map bounds)</button>
+            <label class="check">
+              <input type="checkbox" id="events-auto" />
+              <span>Auto reload on map move</span>
+            </label>
+            <label class="field">
+              <span class="label">Type</span>
+              <select id="events-type">
+                <option value="all" selected>All</option>
+              </select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="events-within-range" />
+              <span>Only within current time range</span>
+            </label>
+            <label class="field">
+              <span class="label">Search</span>
+              <input id="events-search" type="text" placeholder="Filter by road/type/description" />
+            </label>
+	            <button class="button secondary" id="clear-events">Clear events</button>
+	            <div class="events" id="events"></div>
+	            <div class="hint-box hidden" id="events-hint">
+	              <div class="hint-title" id="events-hint-title">Selection hidden by filters</div>
+	              <div class="hint-text" id="events-hint-text">
+	                The selected event is no longer visible under the current filters.
+	              </div>
+	              <div class="button-row">
+	                <button class="button secondary" id="events-relax-filters">Relax filters</button>
+                  <button class="button secondary" id="events-copy-fix">Copy events fix</button>
+	              </div>
+	            </div>
+	            <div class="segment-info" id="event-info">No event selected.</div>
+	          </div>
+	        </div>
+
+        <div class="panel" data-panel-id="help">
+          <div class="panel-title">Help</div>
+          <div class="panel-body small">
+            <ul class="list">
+              <li>Click a marker on the map or use the dropdown to select a segment.</li>
+              <li>Pick a time range and load the time series.</li>
+              <li>Load Hotspots to color segments by mean speed or congestion frequency.</li>
+              <li>Use the Events panel to load incident markers and impact summaries.</li>
+              <li>Keyboard: WASD/Arrows pan, +/- zoom, L load, R reload, F focus, N anomalies, ? shortcuts.</li>
+              <li>
+                You can override API base URL with <span class="mono">?api=http://localhost:8003</span>.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <div class="resizer-vertical" id="sidebar-resizer" title="Drag to resize"></div>
+
+      <section class="content" id="content">
+        <section class="story" id="page-story" aria-label="Page story">
+          <div class="story-hero">
+            <div>
+              <div class="story-title" id="story-title">Loading…</div>
+              <div class="story-subtitle" id="story-subtitle">Connecting to live status…</div>
+            </div>
+            <div class="story-actions" aria-label="Next steps">
+              <button class="button" id="story-primary" type="button">—</button>
+              <button class="button secondary" id="story-secondary" type="button">—</button>
+              <button class="button secondary" id="story-tertiary" type="button">—</button>
+            </div>
+          </div>
+          <div class="cards-grid" id="story-kpis" aria-label="Key KPIs">
+            <div class="card kpi-card small" id="kpi-data-age">
+              <div class="kpi-label">Data age</div>
+              <div class="kpi-value mono">—</div>
+            </div>
+            <div class="card kpi-card small" id="kpi-ingest">
+              <div class="kpi-label">Ingestion</div>
+              <div class="kpi-value mono">—</div>
+            </div>
+            <div class="card kpi-card small" id="kpi-429">
+              <div class="kpi-label">Rate limit (429_1h)</div>
+              <div class="kpi-value mono">—</div>
+            </div>
+            <div class="card kpi-card small" id="kpi-dataset">
+              <div class="kpi-label">Dataset version</div>
+              <div class="kpi-value mono">—</div>
+            </div>
+            <div class="card kpi-card small" id="kpi-page-1">
+              <div class="kpi-label" id="kpi-page-1-label">—</div>
+              <div class="kpi-value mono" id="kpi-page-1-value">—</div>
+            </div>
+            <div class="card kpi-card small" id="kpi-page-2">
+              <div class="kpi-label" id="kpi-page-2-label">—</div>
+              <div class="kpi-value mono" id="kpi-page-2-value">—</div>
+            </div>
+          </div>
+          <div class="callout" id="story-narrative" aria-label="Narrative strip">Loading narrative…</div>
+          <div class="card" aria-label="What to do next">
+            <div class="card-title">What to do next</div>
+            <ul class="insight-list" id="story-next-list"></ul>
+          </div>
+        </section>
+        <section class="overview hidden" id="overview">
+          <div class="overview-hero">
+            <div class="overview-title">Today at a glance</div>
+            <div class="overview-subtitle" id="overview-sentence">Loading…</div>
+            <div class="button-row">
+              <button class="button" id="overview-open-explore" type="button">Open Explore</button>
+              <button class="button secondary" id="overview-copy-link" type="button">Copy link</button>
+            </div>
+          </div>
+          <div class="overview-grid">
+            <div class="overview-card" id="overview-card-hotspots">
+              <div class="overview-card-title">Hotspots</div>
+              <div class="overview-card-metric mono" id="overview-hotspots-metric">—</div>
+              <div class="overview-card-text" id="overview-hotspots-text">Load hotspots to see congestion patterns.</div>
+              <div class="button-row">
+                <button class="button secondary" id="overview-load-hotspots" type="button">Load hotspots</button>
+                <button class="button secondary" id="overview-quick-24h" type="button">Use 24h</button>
+              </div>
+            </div>
+            <div class="overview-card" id="overview-card-rankings">
+              <div class="overview-card-title">Rankings</div>
+              <div class="overview-card-metric mono" id="overview-rankings-metric">—</div>
+              <div class="overview-card-text" id="overview-rankings-text">Find segments/corridors with the lowest reliability.</div>
+              <div class="button-row">
+                <button class="button secondary" id="overview-load-rankings" type="button">Load rankings</button>
+                <button class="button secondary" id="overview-min-samples-1" type="button">Min samples = 1</button>
+              </div>
+            </div>
+            <div class="overview-card" id="overview-card-events">
+              <div class="overview-card-title">Events</div>
+              <div class="overview-card-metric mono" id="overview-events-metric">—</div>
+              <div class="overview-card-text" id="overview-events-text">Load events and inspect impact overlays.</div>
+              <div class="button-row">
+                <button class="button secondary" id="overview-load-events" type="button">Load events</button>
+                <button class="button secondary" id="overview-copy-events-fix" type="button">Copy events fix</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="map" id="map">
+            <div class="map-toolbar" id="map-toolbar">
+              <div class="map-toolbar-row">
+                <label class="check compact" title="Toggle segment markers">
+                  <input type="checkbox" id="map-toggle-segments" checked />
+                  <span>Segments</span>
+                </label>
+                <label class="check compact" title="Toggle hotspots layer">
+                  <input type="checkbox" id="map-toggle-hotspots" checked />
+                  <span>Hotspots</span>
+                </label>
+                <label class="check compact" title="Toggle events markers">
+                  <input type="checkbox" id="map-toggle-events" checked />
+                  <span>Events</span>
+                </label>
+                <label class="check compact" title="Toggle impact overlay">
+                  <input type="checkbox" id="map-toggle-impact" checked />
+                  <span>Impact</span>
+                </label>
+              </div>
+              <div class="map-toolbar-row">
+                <button class="button secondary compact" id="map-focus" type="button">Focus</button>
+                <button class="button secondary compact" id="map-reload-hotspots" type="button">Reload hotspots</button>
+                <button class="button secondary compact" id="map-reload-events" type="button">Reload events</button>
+                <button class="button secondary compact" id="map-clear-selection" type="button">Clear</button>
+              </div>
+              <div class="map-toolbar-row">
+                <label class="check compact" title="Dim everything except the selected item">
+                  <input type="checkbox" id="map-spotlight" />
+                  <span>Spotlight</span>
+                </label>
+                <button class="button secondary compact" id="map-show-nextstep" type="button">Tips</button>
+              </div>
+            </div>
+
+            <div class="map-nextstep" id="map-nextstep">
+              <div class="map-nextstep-head">
+                <div class="map-nextstep-title" id="map-nextstep-title">Next step</div>
+                <button class="map-nextstep-close" id="map-nextstep-close" type="button" title="Hide">×</button>
+              </div>
+              <div class="map-nextstep-text" id="map-nextstep-text">Loading…</div>
+              <div class="button-row" id="map-nextstep-actions"></div>
+            </div>
+
+	          <div class="map-legend hidden" id="hotspot-legend">
+	            <div class="map-legend-title" id="hotspot-legend-title">Hotspots</div>
+	            <div class="map-legend-scale">
+	              <div class="map-legend-bar" id="hotspot-legend-bar"></div>
+              <div class="map-legend-labels">
+                <span id="hotspot-legend-min">—</span>
+                <span id="hotspot-legend-mid">—</span>
+                <span id="hotspot-legend-max">—</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="resizer-horizontal" id="chart-resizer" title="Drag to resize"></div>
+        <div class="chart">
+          <div class="chart-title">Time Series</div>
+          <div class="timeseries-kpis hidden" id="timeseries-kpis"></div>
+          <div class="timeseries-controls hidden" id="timeseries-controls">
+            <div class="timeseries-control-row">
+              <label class="check compact" title="Show speed line">
+                <input type="checkbox" id="ts-layer-speed" checked />
+                <span>Speed</span>
+              </label>
+              <label class="check compact" title="Show volume bars">
+                <input type="checkbox" id="ts-layer-volume" checked />
+                <span>Volume</span>
+              </label>
+              <label class="check compact" title="Show baseline line (if available)">
+                <input type="checkbox" id="ts-layer-baseline" checked />
+                <span>Baseline</span>
+              </label>
+              <label class="check compact" title="Show anomaly markers">
+                <input type="checkbox" id="ts-layer-anomalies" />
+                <span>Anomalies</span>
+              </label>
+              <label class="check compact" title="Show selected event window shading (if any)">
+                <input type="checkbox" id="ts-layer-event-window" checked />
+                <span>Event window</span>
+              </label>
+            </div>
+            <div class="timeseries-control-row">
+              <button class="button secondary compact hidden" id="ts-apply-brush" type="button">Apply brush to time window</button>
+              <button class="button secondary compact" id="ts-open-explore" type="button">Open Explore</button>
+            </div>
+          </div>
+          <div class="timeseries-narrative hidden" id="timeseries-narrative"></div>
+          <div class="events-narrative hidden" id="events-narrative"></div>
+          <div class="hint-box hidden" id="chart-hint">
+            <div class="hint-title" id="chart-hint-title">Notice</div>
+            <div class="hint-text" id="chart-hint-text"></div>
+            <div class="button-row" id="chart-hint-actions"></div>
+          </div>
+          <div class="chart-body" id="chart"></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="overlay hidden" id="shortcuts-overlay" role="dialog" aria-modal="true">
+      <div class="overlay-card">
+        <div class="overlay-title">Shortcuts</div>
+        <div class="overlay-body">
+          <div class="overlay-grid">
+            <div class="key">W/A/S/D</div>
+            <div class="desc">Pan map</div>
+            <div class="key">Arrow keys</div>
+            <div class="desc">Pan map</div>
+            <div class="key">+</div>
+            <div class="desc">Zoom in</div>
+            <div class="key">-</div>
+            <div class="desc">Zoom out</div>
+            <div class="key">L</div>
+            <div class="desc">Load time series</div>
+            <div class="key">R</div>
+            <div class="desc">Reload time series</div>
+            <div class="key">F</div>
+            <div class="desc">Focus selected entity</div>
+            <div class="key">[ / ]</div>
+            <div class="desc">Shift time window</div>
+            <div class="key">H</div>
+            <div class="desc">Toggle hotspots</div>
+            <div class="key">E</div>
+            <div class="desc">Toggle events</div>
+            <div class="key">N</div>
+            <div class="desc">Toggle anomalies</div>
+            <div class="key">?</div>
+            <div class="desc">Toggle this help</div>
+            <div class="key">Esc</div>
+            <div class="desc">Close dialogs</div>
+          </div>
+          <button class="button secondary" id="close-shortcuts">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.1.min.js"></script>
+    <script src="/app.js?v=20260120"></script>
+  </body>
+</html>

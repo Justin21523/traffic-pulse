@@ -1,9 +1,33 @@
 /* global L, Plotly */
 
-const API_BASE = (() => {
-  const override = new URLSearchParams(window.location.search).get("api");
-  if (override) return override.replace(/\/$/, "");
+const API_OVERRIDE_PARAM = new URLSearchParams(window.location.search).get("api");
+const API_OVERRIDE_FORCE = new URLSearchParams(window.location.search).get("api_force") === "1";
 
+const API_OVERRIDE_INFO = (() => {
+  if (!API_OVERRIDE_PARAM) return { applied: false, ignored: false, reason: null, base: null };
+  let url = null;
+  try {
+    url = new URL(API_OVERRIDE_PARAM);
+  } catch (err) {
+    return { applied: false, ignored: true, reason: "Invalid api override URL.", base: null };
+  }
+  const normalized = url.toString().replace(/\/$/, "");
+  if (API_OVERRIDE_FORCE) return { applied: true, ignored: false, reason: null, base: normalized };
+
+  // Avoid CORS footguns by default. If you really want cross-origin, add `api_force=1`.
+  if (url.origin !== window.location.origin) {
+    return {
+      applied: false,
+      ignored: true,
+      reason: `Ignoring api override (${url.origin}) because it is cross-origin. Use api_force=1 if intentional.`,
+      base: null,
+    };
+  }
+  return { applied: true, ignored: false, reason: null, base: normalized };
+})();
+
+const API_BASE = (() => {
+  if (API_OVERRIDE_INFO.applied && API_OVERRIDE_INFO.base) return API_OVERRIDE_INFO.base;
   if (window.location.port === "8003") return window.location.origin;
   return `${window.location.protocol}//${window.location.hostname}:8003`;
 })();
@@ -11,6 +35,7 @@ const API_BASE = (() => {
 const statusEl = document.getElementById("status");
 const apiBaseEl = document.getElementById("api-base");
 const themeSelectEl = document.getElementById("theme-select");
+const topnavEl = document.getElementById("topnav");
 const liveIndicatorEl = document.getElementById("live-indicator");
 const liveDetailEl = document.getElementById("live-detail");
 const rateIndicatorEl = document.getElementById("rate-indicator");
@@ -22,6 +47,8 @@ const exportSnapshotButton = document.getElementById("export-snapshot");
 const qualityLinkEl = document.getElementById("link-quality");
 const diagnosticsLinkEl = document.getElementById("link-diagnostics");
 const alertsLinkEl = document.getElementById("link-alerts");
+
+const EVENTS_FIX_COMMAND = `systemctl --user start trafficpulse-events.service\njournalctl --user -u trafficpulse-events.service -n 120 --no-pager`;
 
 const pipelineRefreshButton = document.getElementById("pipeline-refresh");
 const pipelineCopyEventsFixButton = document.getElementById("pipeline-copy-events-fix");
@@ -103,6 +130,71 @@ const hotspotLegendBarEl = document.getElementById("hotspot-legend-bar");
 const hotspotLegendMinEl = document.getElementById("hotspot-legend-min");
 const hotspotLegendMidEl = document.getElementById("hotspot-legend-mid");
 const hotspotLegendMaxEl = document.getElementById("hotspot-legend-max");
+
+const mapToggleSegmentsEl = document.getElementById("map-toggle-segments");
+const mapToggleHotspotsEl = document.getElementById("map-toggle-hotspots");
+const mapToggleEventsEl = document.getElementById("map-toggle-events");
+const mapToggleImpactEl = document.getElementById("map-toggle-impact");
+const mapSpotlightEl = document.getElementById("map-spotlight");
+const mapFocusButton = document.getElementById("map-focus");
+const mapReloadHotspotsButton = document.getElementById("map-reload-hotspots");
+const mapReloadEventsButton = document.getElementById("map-reload-events");
+const mapClearSelectionButton = document.getElementById("map-clear-selection");
+const mapShowNextStepButton = document.getElementById("map-show-nextstep");
+
+const mapNextStepEl = document.getElementById("map-nextstep");
+const mapNextStepTitleEl = document.getElementById("map-nextstep-title");
+const mapNextStepTextEl = document.getElementById("map-nextstep-text");
+const mapNextStepActionsEl = document.getElementById("map-nextstep-actions");
+const mapNextStepCloseButton = document.getElementById("map-nextstep-close");
+
+const overviewEl = document.getElementById("overview");
+const overviewSentenceEl = document.getElementById("overview-sentence");
+const overviewOpenExploreButton = document.getElementById("overview-open-explore");
+const overviewCopyLinkButton = document.getElementById("overview-copy-link");
+const overviewLoadHotspotsButton = document.getElementById("overview-load-hotspots");
+const overviewLoadRankingsButton = document.getElementById("overview-load-rankings");
+const overviewLoadEventsButton = document.getElementById("overview-load-events");
+const overviewQuick24hButton = document.getElementById("overview-quick-24h");
+const overviewMinSamples1Button = document.getElementById("overview-min-samples-1");
+const overviewCopyEventsFixButton = document.getElementById("overview-copy-events-fix");
+const overviewHotspotsMetricEl = document.getElementById("overview-hotspots-metric");
+const overviewHotspotsTextEl = document.getElementById("overview-hotspots-text");
+const overviewRankingsMetricEl = document.getElementById("overview-rankings-metric");
+const overviewRankingsTextEl = document.getElementById("overview-rankings-text");
+const overviewEventsMetricEl = document.getElementById("overview-events-metric");
+const overviewEventsTextEl = document.getElementById("overview-events-text");
+
+const storyEl = document.getElementById("page-story");
+const storyTitleEl = document.getElementById("story-title");
+const storySubtitleEl = document.getElementById("story-subtitle");
+const storyNarrativeEl = document.getElementById("story-narrative");
+const storyNextListEl = document.getElementById("story-next-list");
+const storyPrimaryButtonEl = document.getElementById("story-primary");
+const storySecondaryButtonEl = document.getElementById("story-secondary");
+const storyTertiaryButtonEl = document.getElementById("story-tertiary");
+const kpiDataAgeCardEl = document.getElementById("kpi-data-age");
+const kpiIngestCardEl = document.getElementById("kpi-ingest");
+const kpi429CardEl = document.getElementById("kpi-429");
+const kpiDatasetCardEl = document.getElementById("kpi-dataset");
+const kpiPage1LabelEl = document.getElementById("kpi-page-1-label");
+const kpiPage1ValueEl = document.getElementById("kpi-page-1-value");
+const kpiPage2LabelEl = document.getElementById("kpi-page-2-label");
+const kpiPage2ValueEl = document.getElementById("kpi-page-2-value");
+let exploreStoryCollapseButtonEl = null;
+let exploreStoryCollapsedSummaryEl = null;
+
+const timeseriesKpisEl = document.getElementById("timeseries-kpis");
+const timeseriesControlsEl = document.getElementById("timeseries-controls");
+const timeseriesNarrativeEl = document.getElementById("timeseries-narrative");
+const eventsNarrativeEl = document.getElementById("events-narrative");
+const tsLayerSpeedEl = document.getElementById("ts-layer-speed");
+const tsLayerVolumeEl = document.getElementById("ts-layer-volume");
+const tsLayerBaselineEl = document.getElementById("ts-layer-baseline");
+const tsLayerAnomaliesEl = document.getElementById("ts-layer-anomalies");
+const tsLayerEventWindowEl = document.getElementById("ts-layer-event-window");
+const tsApplyBrushButton = document.getElementById("ts-apply-brush");
+const tsOpenExploreButton = document.getElementById("ts-open-explore");
 
 const toggleAnomaliesEl = document.getElementById("toggle-anomalies");
 const toggleHotspotsEl = document.getElementById("toggle-hotspots");
@@ -238,15 +330,22 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: "&copy; OpenStreetMap contributors",
 }).addTo(map);
 
+const haloPane = map.createPane("haloPane");
+haloPane.style.zIndex = 650;
+
 const markers = L.layerGroup().addTo(map);
 const eventMarkers = L.layerGroup().addTo(map);
 const impactSegmentsLayer = L.layerGroup().addTo(map);
 const hotspotsLayer = L.layerGroup().addTo(map);
 const linkedHotspotsLayer = L.layerGroup().addTo(map);
+const selectionHaloLayer = L.layerGroup().addTo(map);
+
+let segmentSelectionHalo = null;
+let eventSelectionHalo = null;
 
 let uiDefaults = null;
 let uiState = loadUiState();
-const apiOverrideParam = new URLSearchParams(window.location.search).get("api");
+const apiOverrideParam = API_OVERRIDE_INFO.applied ? API_OVERRIDE_PARAM : null;
 let suppressUrlSync = false;
 let urlSyncTimer = null;
 let pendingUrlSelection = null;
@@ -280,6 +379,7 @@ function applyUrlStateOverrides() {
   if (!params.size) return;
 
   urlOverrides = {
+    page: params.get("page"),
     theme: params.get("theme"),
     minutes: params.get("minutes"),
     follow_latest: parseBoolParam(params.get("follow_latest")),
@@ -303,6 +403,12 @@ function applyUrlStateOverrides() {
   if (theme) {
     uiState.layout = uiState.layout || {};
     uiState.layout.theme = theme === "policy" ? "policy" : "product";
+  }
+
+  const page = urlOverrides.page;
+  if (page) {
+    uiState.layout = uiState.layout || {};
+    uiState.layout.page = String(page);
   }
 
   if (urlOverrides.follow_latest != null) {
@@ -372,6 +478,246 @@ function applyUrlOverridesToForm() {
   }
 }
 
+function normalizePage(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (["overview", "explore", "timeseries", "events", "rankings", "pipeline"].includes(v)) return v;
+  return "explore";
+}
+
+function getPageFromDocument() {
+  const bodyPage = document.body && document.body.dataset ? document.body.dataset.page : null;
+  if (bodyPage) return normalizePage(bodyPage);
+
+  const path = String(window.location.pathname || "/").replace(/\/+$/, "/");
+  const m = /^\/(overview|explore|timeseries|events|rankings|pipeline)\/$/.exec(path);
+  if (m) return normalizePage(m[1]);
+  return null;
+}
+
+const NAV_ACTION_KEY = "trafficpulse.nav_action.v1";
+
+function setNavAction(action) {
+  try {
+    if (!action) {
+      window.sessionStorage.removeItem(NAV_ACTION_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(NAV_ACTION_KEY, JSON.stringify({ action: String(action), at: Date.now() }));
+  } catch (err) {
+    // ignore
+  }
+}
+
+function consumeNavAction() {
+  try {
+    const raw = window.sessionStorage.getItem(NAV_ACTION_KEY);
+    if (!raw) return null;
+    window.sessionStorage.removeItem(NAV_ACTION_KEY);
+    const parsed = JSON.parse(raw);
+    const action = parsed && typeof parsed === "object" ? parsed.action : null;
+    return action ? String(action) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function navigateToPage(page, { action } = {}) {
+  syncUrlFromUi();
+  if (action) setNavAction(action);
+  const next = normalizePage(page);
+  const url = new URL(window.location.href);
+  url.pathname = `/${next}/`;
+  url.searchParams.delete("page"); // legacy SPA param
+  window.location.assign(url.toString());
+}
+
+function setPage(page, { syncUrl } = { syncUrl: true }) {
+  const next = normalizePage(page);
+  currentPage = next;
+  uiState.layout = uiState.layout || {};
+  uiState.layout.page = next;
+  saveUiState(uiState);
+
+  document.body.classList.remove(
+    "page-overview",
+    "page-explore",
+    "page-timeseries",
+    "page-events",
+    "page-rankings",
+    "page-pipeline"
+  );
+  document.body.classList.add(`page-${next}`);
+
+  if (topnavEl) {
+    for (const btn of Array.from(topnavEl.querySelectorAll("[data-page]"))) {
+      const p = btn.getAttribute("data-page");
+      btn.classList.toggle("active", p === next);
+    }
+  }
+
+  if (overviewEl) overviewEl.classList.toggle("hidden", next !== "overview");
+
+  if (next === "timeseries") {
+    if (timeseriesKpisEl) timeseriesKpisEl.classList.remove("hidden");
+    if (timeseriesControlsEl) timeseriesControlsEl.classList.remove("hidden");
+    if (timeseriesNarrativeEl) timeseriesNarrativeEl.classList.remove("hidden");
+  } else {
+    if (timeseriesKpisEl) timeseriesKpisEl.classList.add("hidden");
+    if (timeseriesControlsEl) timeseriesControlsEl.classList.add("hidden");
+    if (timeseriesNarrativeEl) timeseriesNarrativeEl.classList.add("hidden");
+    pendingBrushRange = null;
+    if (tsApplyBrushButton) tsApplyBrushButton.classList.add("hidden");
+  }
+  if (eventsNarrativeEl) eventsNarrativeEl.classList.toggle("hidden", next !== "events");
+
+  focusPagePanels(next);
+
+  if (syncUrl) scheduleUrlSync();
+
+  window.setTimeout(() => {
+    try {
+      map.invalidateSize({ animate: false });
+    } catch (err) {
+      // ignore
+    }
+  }, 50);
+
+  renderEventsStory();
+  renderStory();
+  syncExploreStoryCollapseUi();
+}
+
+function getExploreStoryCollapsedSetting() {
+  const stored = getNested(uiState, "layout.exploreStoryCollapsed", null);
+  if (stored == null) return true; // default: collapsed for a cleaner map
+  return Boolean(stored);
+}
+
+function setExploreStoryCollapsed(collapsed, { persist } = { persist: true }) {
+  if (!storyEl) return;
+  storyEl.classList.toggle("collapsed", Boolean(collapsed));
+  if (exploreStoryCollapseButtonEl) exploreStoryCollapseButtonEl.textContent = collapsed ? "Expand" : "Collapse";
+  if (persist) {
+    uiState.layout = uiState.layout || {};
+    uiState.layout.exploreStoryCollapsed = Boolean(collapsed);
+    saveUiState(uiState);
+  }
+}
+
+function syncExploreStoryCollapseUi() {
+  if (!storyEl) return;
+  if (currentPage !== "explore") return;
+
+  const actions = storyEl.querySelector(".story-actions");
+  const hero = storyEl.querySelector(".story-hero");
+  if (!actions || !hero) return;
+
+  if (!exploreStoryCollapsedSummaryEl) {
+    const titleBlock = hero.firstElementChild;
+    if (titleBlock) {
+      const summary = document.createElement("div");
+      summary.className = "story-collapsed-summary mono";
+      summary.textContent = "";
+      titleBlock.appendChild(summary);
+      exploreStoryCollapsedSummaryEl = summary;
+    }
+  }
+
+  if (!exploreStoryCollapseButtonEl) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "button secondary compact story-collapse-toggle";
+    btn.textContent = "Collapse";
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const next = !storyEl.classList.contains("collapsed");
+      setExploreStoryCollapsed(next);
+    });
+    actions.insertBefore(btn, actions.firstChild);
+    exploreStoryCollapseButtonEl = btn;
+  }
+
+  if (!hero.dataset.storyCollapseInit) {
+    hero.dataset.storyCollapseInit = "1";
+    hero.addEventListener("click", (ev) => {
+      if (!storyEl.classList.contains("collapsed")) return;
+      const target = ev.target;
+      if (target && typeof target.closest === "function" && target.closest(".story-collapse-toggle")) return;
+      setExploreStoryCollapsed(false);
+    });
+  }
+
+  setExploreStoryCollapsed(getExploreStoryCollapsedSetting(), { persist: false });
+}
+
+function focusPagePanels(page) {
+  const panelId =
+    page === "events"
+      ? "events"
+      : page === "rankings"
+        ? "rankings"
+        : page === "pipeline"
+          ? "pipeline"
+          : null;
+  if (!panelId) return;
+  const panel = document.querySelector(`.panel[data-panel-id="${panelId}"]`);
+  if (!panel) return;
+  panel.classList.remove("collapsed");
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderEventsStory() {
+  if (!eventsNarrativeEl) return;
+  if (currentPage !== "events") {
+    eventsNarrativeEl.textContent = "";
+    return;
+  }
+
+  if (!eventsLoaded) {
+    eventsNarrativeEl.textContent =
+      "Load events to start an incident story: markers → select an event → impact overlay → linked hotspots.";
+    return;
+  }
+
+  if (!selectedEventId) {
+    eventsNarrativeEl.textContent = "Pick an event marker or click an event in the list to see its impact story.";
+    return;
+  }
+
+  const event = eventsById.get(String(selectedEventId));
+  if (!event) {
+    eventsNarrativeEl.textContent = "Selected event is not available in the current dataset.";
+    return;
+  }
+
+  const parts = [];
+  parts.push(`${event.event_type || "Event"} ${event.event_id}.`);
+  if (event.road_name) parts.push(`Road: ${event.road_name}.`);
+  if (event.start_time) parts.push(`Start: ${formatEventTimeLocal(event.start_time)}.`);
+  if (event.severity != null) parts.push(`Severity: ${event.severity}.`);
+
+  if (lastEventImpact) {
+    const baseline = lastEventImpact.baseline_mean_speed_kph != null ? Number(lastEventImpact.baseline_mean_speed_kph) : null;
+    const during = lastEventImpact.event_mean_speed_kph != null ? Number(lastEventImpact.event_mean_speed_kph) : null;
+    const delta = lastEventImpact.speed_delta_mean_kph != null ? Number(lastEventImpact.speed_delta_mean_kph) : null;
+    const rec = lastEventImpact.recovery_minutes != null ? Number(lastEventImpact.recovery_minutes) : null;
+    if (baseline != null && during != null) {
+      parts.push(`Mean speed: ${baseline.toFixed(1)} → ${during.toFixed(1)} kph.`);
+    }
+    if (delta != null) parts.push(`Delta: ${delta.toFixed(1)} kph.`);
+    if (rec != null) parts.push(`Recovery: ${Math.round(rec)} min.`);
+  } else {
+    parts.push("Impact: loading…");
+  }
+
+  if (lastEventLinksInfo && !lastEventLinksInfo.loading) {
+    parts.push(`Linked hotspots: ${Math.round(lastEventLinksInfo.count || 0)}.`);
+  }
+
+  parts.push("Tip: enable Spotlight on the map toolbar to focus on the selected event.");
+  eventsNarrativeEl.textContent = parts.join(" ");
+}
+
 function syncUrlFromUi() {
   const params = new URLSearchParams();
 
@@ -422,9 +768,12 @@ function syncUrlFromUi() {
 applyUrlStateOverrides();
 
 let showAnomalies = getNested(uiState, "overlays.anomalies", true);
+let showSegments = getNested(uiState, "overlays.segments", true);
 let showHotspots = getNested(uiState, "overlays.hotspots", true);
 let showEvents = getNested(uiState, "overlays.events", true);
 let showImpact = getNested(uiState, "overlays.impact", true);
+let spotlightMode = getNested(uiState, "map.spotlight", false);
+let nextStepDismissed = getNested(uiState, "map.nextStepDismissed", false);
 
 let segments = [];
 let segmentsById = new Map();
@@ -455,6 +804,9 @@ let lastEventsClearedReason = null;
 let lastHotspotsReason = null;
 let lastRankingsReason = null;
 let lastEventsReason = null;
+let currentPage = "explore";
+let pendingBrushRange = null;
+let suppressBrush = false;
 let lastUiStatus = null;
 let lastUiStatusPrev = null;
 let uiStatusStream = null;
@@ -833,6 +1185,15 @@ dataHub.onUpdate((state, kind) => {
   if (["trends", "alerts", "diagnostics", "status"].includes(kind)) {
     renderPipelinePanel();
   }
+  if (["diagnostics", "status"].includes(kind)) {
+    renderNextStepCard();
+  }
+  if (["trends", "diagnostics", "status"].includes(kind)) {
+    renderOverview();
+  }
+  if (["trends", "alerts", "diagnostics", "status"].includes(kind)) {
+    renderStory();
+  }
 });
 
 function recordCache(kind, cache) {
@@ -935,6 +1296,7 @@ function applyUiStatus(status) {
   updateRateIndicator(status);
   applyHealthBadge(status);
   renderPipelinePanel();
+  renderNextStepCard();
 
   applyFollowLatestWindow();
 
@@ -1042,16 +1404,227 @@ function setLayerVisible(layer, visible) {
 }
 
 function applyOverlayVisibility() {
+  setLayerVisible(markers, Boolean(showSegments));
   setLayerVisible(hotspotsLayer, Boolean(showHotspots));
   setLayerVisible(eventMarkers, Boolean(showEvents));
   setLayerVisible(impactSegmentsLayer, Boolean(showImpact));
   setLayerVisible(linkedHotspotsLayer, Boolean(showEvents));
+  // Halos follow selection; keep visible only when there is a selection.
+  setLayerVisible(selectionHaloLayer, Boolean(showSegments || showEvents));
+}
+
+function setNextStepCard({ title, text, actions } = {}) {
+  if (!mapNextStepEl || !mapNextStepTitleEl || !mapNextStepTextEl || !mapNextStepActionsEl) return;
+  if (nextStepDismissed) {
+    mapNextStepEl.classList.add("hidden");
+    return;
+  }
+
+  mapNextStepEl.classList.remove("hidden");
+  mapNextStepTitleEl.textContent = title || "Next step";
+  mapNextStepTextEl.textContent = text || "";
+
+  mapNextStepActionsEl.innerHTML = "";
+  for (const action of actions || []) {
+    if (!action || !action.label || typeof action.onClick !== "function") continue;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = action.primary ? "button" : "button secondary";
+    btn.textContent = String(action.label);
+    btn.addEventListener("click", () => {
+      try {
+        action.onClick();
+      } catch (err) {
+        // ignore
+      }
+    });
+    mapNextStepActionsEl.appendChild(btn);
+  }
+}
+
+function renderNextStepCard() {
+  if (!mapNextStepEl) return;
+  if (nextStepDismissed) {
+    mapNextStepEl.classList.add("hidden");
+    return;
+  }
+
+  const diag = dataHub.state.diagnostics;
+  const entityType = entityTypeEl && entityTypeEl.value ? String(entityTypeEl.value) : "segment";
+
+  if (!segments.length) {
+    setNextStepCard({
+      title: "Loading",
+      text: "Loading segments…",
+      actions: [],
+    });
+    return;
+  }
+
+  if (entityType === "corridor") {
+    if (!selectedCorridorId) {
+      setNextStepCard({
+        title: "Select a corridor",
+        text: "Pick a corridor from the dropdown, then load its time series.",
+        actions: [
+          { label: "Focus corridor select", onClick: () => corridorSelectEl?.focus?.(), primary: true },
+          { label: "Load time series", onClick: () => loadTimeseries(), primary: false },
+        ],
+      });
+      return;
+    }
+  } else if (!selectedSegmentId) {
+    setNextStepCard({
+      title: "Select a segment",
+      text: "Click a marker on the map, or pick a segment from the dropdown.",
+      actions: [
+        { label: "Focus segment select", onClick: () => segmentSelectEl?.focus?.(), primary: true },
+        { label: "Focus map", onClick: () => map.getContainer()?.focus?.(), primary: false },
+      ],
+    });
+    return;
+  }
+
+  const hasTimeseries =
+    lastTimeseries &&
+    lastTimeseries.entity &&
+    lastTimeseries.entity.id &&
+    Array.isArray(lastTimeseries.points) &&
+    lastTimeseries.points.length > 0;
+  if (!hasTimeseries) {
+    setNextStepCard({
+      title: "Load a time series",
+      text: "You have a selection. Load its time series for the current time window.",
+      actions: [
+        { label: "Load time series", onClick: () => loadTimeseries(), primary: true },
+        { label: "Use 24h window", onClick: () => quickUse24hWindow(), primary: false },
+      ],
+    });
+    return;
+  }
+
+  if (!hotspotsLoaded) {
+    setNextStepCard({
+      title: "Load hotspots",
+      text: "Color the map by speed / congestion / drop vs baseline. If you see an empty result, widen the time window or lower Min samples.",
+      actions: [
+        { label: "Load hotspots", onClick: () => loadHotspots(), primary: true },
+        { label: "Min samples = 1", onClick: () => quickSetMinSamplesOne(), primary: false },
+        { label: "Use 24h window", onClick: () => quickUse24hWindow(), primary: false },
+      ],
+    });
+    return;
+  }
+
+  if (showEvents && !eventsLoaded) {
+    const eventsExists = Boolean(diag?.events_csv?.exists);
+    const hint = !eventsExists
+      ? "Events are not available yet (events.csv is missing). This is often caused by upstream rate limits."
+      : "Events exist, but they are not loaded yet for the current map window.";
+    setNextStepCard({
+      title: "Load events (optional)",
+      text: `${hint} You can wait for the hourly timer, or run the events service manually.`,
+      actions: [
+        { label: "Load events", onClick: () => loadEvents(), primary: true },
+        { label: "Copy events fix", onClick: () => copyText(EVENTS_FIX_COMMAND), primary: false },
+      ],
+    });
+    return;
+  }
+
+  setNextStepCard({
+    title: "Explore",
+    text: "Tip: toggle Spotlight to focus on the selected entity. Press “?” for keyboard shortcuts.",
+    actions: [
+      { label: "Focus selected", onClick: () => focusSelected(), primary: true },
+      { label: "Reload hotspots", onClick: () => loadHotspots(), primary: false },
+    ],
+  });
 }
 
 function setHintVisible(el, visible) {
   if (!el) return;
   if (visible) el.classList.remove("hidden");
   else el.classList.add("hidden");
+}
+
+function updateSelectionHalos() {
+  selectionHaloLayer.clearLayers();
+  segmentSelectionHalo = null;
+  eventSelectionHalo = null;
+
+  const colors = themeColors();
+
+  const segId = selectedSegmentId != null ? String(selectedSegmentId) : null;
+  const evId = selectedEventId != null ? String(selectedEventId) : null;
+
+  if (segId && markerById.has(segId)) {
+    const marker = markerById.get(segId);
+    const ll = marker?.getLatLng?.();
+    if (ll) {
+      segmentSelectionHalo = L.circleMarker(ll, {
+        pane: "haloPane",
+        radius: 18,
+        color: colors.accent2Hex,
+        weight: 3,
+        fillColor: rgba(colors.accent2Rgb, 0.22),
+        fillOpacity: 0.32,
+        opacity: 0.95,
+        interactive: false,
+        className: "selection-halo",
+      }).addTo(selectionHaloLayer);
+    }
+  }
+
+  if (evId && eventMarkerById.has(evId)) {
+    const marker = eventMarkerById.get(evId);
+    const ll = marker?.getLatLng?.();
+    if (ll) {
+      eventSelectionHalo = L.circleMarker(ll, {
+        pane: "haloPane",
+        radius: 18,
+        color: colors.dangerHex,
+        weight: 3,
+        fillColor: rgba(colors.dangerRgb, 0.18),
+        fillOpacity: 0.32,
+        opacity: 0.95,
+        interactive: false,
+        className: "selection-halo",
+      }).addTo(selectionHaloLayer);
+    }
+  }
+}
+
+function applySpotlightStyles() {
+  const on = Boolean(spotlightMode);
+  const selectedSeg = selectedSegmentId ? String(selectedSegmentId) : null;
+  const selectedEv = selectedEventId ? String(selectedEventId) : null;
+
+  const dim = { opacity: 0.18, fillOpacity: 0.08 };
+  const normalSeg = { opacity: 1, fillOpacity: 0.6 };
+  const normalHotspot = { opacity: 1, fillOpacity: 0.78 };
+  const normalEvent = { opacity: 1, fillOpacity: 0.85 };
+
+  for (const [segId, marker] of markerById.entries()) {
+    if (!marker || typeof marker.setStyle !== "function") continue;
+    const isSelected = selectedSeg != null && String(segId) === selectedSeg;
+    if (!on || isSelected || !selectedSeg) marker.setStyle(normalSeg);
+    else marker.setStyle(dim);
+  }
+
+  for (const [segId, marker] of hotspotMarkerBySegmentId.entries()) {
+    if (!marker || typeof marker.setStyle !== "function") continue;
+    const isSelected = selectedSeg != null && String(segId) === selectedSeg;
+    if (!on || isSelected || !selectedSeg) marker.setStyle(normalHotspot);
+    else marker.setStyle(dim);
+  }
+
+  for (const [eventId, marker] of eventMarkerById.entries()) {
+    if (!marker || typeof marker.setStyle !== "function") continue;
+    const isSelected = selectedEv != null && String(eventId) === selectedEv;
+    if (!on || isSelected || !selectedEv) marker.setStyle(normalEvent);
+    else marker.setStyle(dim);
+  }
 }
 
 function setEventsHint({ title, text, showRelaxFilters, showCopyFix } = {}) {
@@ -1074,7 +1647,8 @@ function isLikelyDatasetMissing(reason) {
   return false;
 }
 
-function setChartHint({ title, text, actions } = {}) {
+function setChartHint(opts) {
+  const { title, text, actions } = opts || {};
   if (!chartHintEl) return;
   if (!text) {
     setHintVisible(chartHintEl, false);
@@ -1101,6 +1675,48 @@ function setChartHint({ title, text, actions } = {}) {
     }
   }
   setHintVisible(chartHintEl, true);
+}
+
+function renderEmptyState(containerEl, { title, text, actions } = {}) {
+  if (!containerEl) return;
+  containerEl.innerHTML = "";
+
+  const wrap = document.createElement("div");
+  wrap.className = "empty-state";
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "empty-title";
+  titleEl.textContent = title || "Nothing to show yet";
+
+  const textEl = document.createElement("div");
+  textEl.className = "empty-text";
+  textEl.textContent = text || "";
+
+  wrap.appendChild(titleEl);
+  wrap.appendChild(textEl);
+
+  const btnRow = document.createElement("div");
+  btnRow.className = "button-row";
+  let didAddAction = false;
+  for (const [i, action] of (actions || []).entries()) {
+    if (!action || !action.label || typeof action.onClick !== "function") continue;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = i === 0 ? "button" : "button secondary";
+    btn.textContent = String(action.label);
+    btn.addEventListener("click", () => {
+      try {
+        action.onClick();
+      } catch (err) {
+        // ignore
+      }
+    });
+    btnRow.appendChild(btn);
+    didAddAction = true;
+  }
+  if (didAddAction) wrap.appendChild(btnRow);
+
+  containerEl.appendChild(wrap);
 }
 
 async function copyText(text) {
@@ -1691,6 +2307,12 @@ function initLivePanel() {
   applyLiveStateToForm();
   refreshUiStatus();
   dataHub.start({ includeStatus: false });
+  initPageNav();
+  initOverviewActions();
+  initTimeseriesControls();
+  if (API_OVERRIDE_INFO.ignored && API_OVERRIDE_INFO.reason) {
+    setStatus(API_OVERRIDE_INFO.reason);
+  }
   startFreshnessTicker();
   startStatusStream();
   updateCacheIndicator();
@@ -1922,14 +2544,19 @@ function applyStateToForm(state) {
   if (toggleHotspotsEl) toggleHotspotsEl.checked = Boolean(showHotspots);
   if (toggleEventsEl) toggleEventsEl.checked = Boolean(showEvents);
   if (toggleImpactEl) toggleImpactEl.checked = Boolean(showImpact);
+  syncMapToolbarFromState();
 }
 
 function persistOverlays() {
   uiState.overlays = uiState.overlays || {};
   uiState.overlays.anomalies = Boolean(showAnomalies);
+  uiState.overlays.segments = Boolean(showSegments);
   uiState.overlays.hotspots = Boolean(showHotspots);
   uiState.overlays.events = Boolean(showEvents);
   uiState.overlays.impact = Boolean(showImpact);
+  uiState.map = uiState.map || {};
+  uiState.map.spotlight = Boolean(spotlightMode);
+  uiState.map.nextStepDismissed = Boolean(nextStepDismissed);
   saveUiState(uiState);
 }
 
@@ -2012,6 +2639,8 @@ function initSettingsPanel() {
       showHotspots = Boolean(toggleHotspotsEl.checked);
       persistOverlays();
       applyOverlayVisibility();
+      syncMapToolbarFromState();
+      renderNextStepCard();
     });
   }
 
@@ -2021,6 +2650,8 @@ function initSettingsPanel() {
       showEvents = Boolean(toggleEventsEl.checked);
       persistOverlays();
       applyOverlayVisibility();
+      syncMapToolbarFromState();
+      renderNextStepCard();
     });
   }
 
@@ -2030,6 +2661,8 @@ function initSettingsPanel() {
       showImpact = Boolean(toggleImpactEl.checked);
       persistOverlays();
       applyOverlayVisibility();
+      syncMapToolbarFromState();
+      renderNextStepCard();
     });
   }
 
@@ -2090,6 +2723,671 @@ function focusSelected() {
     }
     if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
   }
+}
+
+function clearSelection() {
+  selectedSegmentId = null;
+  selectedCorridorId = null;
+  selectedEventId = null;
+
+  if (entityTypeEl) entityTypeEl.value = "segment";
+  if (segmentSelectEl) segmentSelectEl.value = "";
+  if (corridorSelectEl) corridorSelectEl.value = "";
+
+  updateSegmentInfo(null);
+  updateCorridorInfo(null);
+
+  impactSegmentsLayer.clearLayers();
+  linkedHotspotsLayer.clearLayers();
+  lastEventImpact = null;
+  lastEventLinksInfo = null;
+  lastEventsClearedReason = null;
+  updateEventInfo(null, null, null);
+
+  updateSelectionStyles();
+  scheduleUrlSync();
+  renderNextStepCard();
+}
+
+function syncMapToolbarFromState() {
+  if (mapToggleSegmentsEl) mapToggleSegmentsEl.checked = Boolean(showSegments);
+  if (mapToggleHotspotsEl) mapToggleHotspotsEl.checked = Boolean(showHotspots);
+  if (mapToggleEventsEl) mapToggleEventsEl.checked = Boolean(showEvents);
+  if (mapToggleImpactEl) mapToggleImpactEl.checked = Boolean(showImpact);
+  if (mapSpotlightEl) mapSpotlightEl.checked = Boolean(spotlightMode);
+}
+
+function initPageNav() {
+  const docPage = getPageFromDocument();
+  const urlPage = urlOverrides && urlOverrides.page ? urlOverrides.page : null;
+  const storedPage = getNested(uiState, "layout.page", null);
+  const initial = normalizePage(docPage || urlPage || storedPage || "explore");
+  setPage(initial, { syncUrl: false });
+
+  if (!topnavEl) return;
+  for (const btn of Array.from(topnavEl.querySelectorAll("[data-page]"))) {
+    // Dedicated pages use <a href="/{page}/"> navigation. Keep SPA button support
+    // for backwards compatibility on the legacy root page.
+    if (btn.tagName !== "BUTTON") continue;
+    btn.addEventListener("click", () => {
+      const p = btn.getAttribute("data-page");
+      setPage(p || "explore");
+      renderOverview();
+      renderTimeseriesInsights();
+    });
+  }
+}
+
+function renderOverview() {
+  if (!overviewEl) return;
+
+  const status = dataHub.state.status;
+  const trends = dataHub.state.trends;
+  const diag = dataHub.state.diagnostics;
+
+  const lastMs = status?.observations_last_timestamp_utc ? parseIsoToMs(status.observations_last_timestamp_utc) : null;
+  const age = lastMs != null ? formatAge(Math.max(0, (Date.now() - lastMs) / 1000)) : "—";
+  const rl = status?.ingest_rate_limit ? formatRateLimitSummary(status.ingest_rate_limit) : "—";
+  const ok = status?.last_ingest_ok;
+  const okText = ok === true ? "ingestion OK" : ok === false ? "ingestion error" : "ingestion unknown";
+  const hotCount = hotspotsLoaded ? hotspotRows.length : 0;
+  const rankCount = rankingsLoaded ? lastRankings.length : 0;
+  const evCount = eventsLoaded ? events.length : 0;
+
+  const trendSummary = trends?.summary ? formatTrendsSummary(trends.summary).text.replace("Trend: ", "") : "—";
+  const eventsExists = Boolean(diag?.events_csv?.exists);
+
+  if (overviewSentenceEl) {
+    overviewSentenceEl.textContent = `Data age: ${age} • ${okText} • Rate: ${rl} • Trend: ${trendSummary}`;
+  }
+
+  if (overviewHotspotsMetricEl) overviewHotspotsMetricEl.textContent = hotspotsLoaded ? `loaded=${hotCount}` : "not loaded";
+  if (overviewHotspotsTextEl)
+    overviewHotspotsTextEl.textContent = hotspotsLoaded
+      ? "Hotspots are ready. Switch to Explore to inspect the map."
+      : "Load hotspots to color the map by speed / congestion / baseline drop.";
+
+  if (overviewRankingsMetricEl) overviewRankingsMetricEl.textContent = rankingsLoaded ? `loaded=${rankCount}` : "not loaded";
+  if (overviewRankingsTextEl)
+    overviewRankingsTextEl.textContent = rankingsLoaded
+      ? "Rankings are ready. Click a row to jump to a segment/corridor."
+      : "Load rankings to find low-reliability segments/corridors.";
+
+  if (overviewEventsMetricEl) overviewEventsMetricEl.textContent = eventsLoaded ? `loaded=${evCount}` : eventsExists ? "available" : "missing";
+  if (overviewEventsTextEl)
+    overviewEventsTextEl.textContent = eventsExists
+      ? "Load events to see markers and impact overlays."
+      : "Events dataset is not available yet (likely upstream rate-limited).";
+}
+
+function setCardValue(cardEl, valueText) {
+  if (!cardEl) return;
+  const el = cardEl.querySelector(".kpi-value");
+  if (!el) return;
+  el.textContent = valueText;
+}
+
+function setStoryButton(btnEl, { label, onClick, hidden } = {}) {
+  if (!btnEl) return;
+  const hide = Boolean(hidden) || !label || typeof onClick !== "function";
+  btnEl.classList.toggle("hidden", hide);
+  if (hide) {
+    btnEl.onclick = null;
+    btnEl.textContent = "—";
+    return;
+  }
+  btnEl.textContent = String(label);
+  btnEl.onclick = (ev) => {
+    ev.preventDefault();
+    try {
+      onClick();
+    } catch (err) {
+      // ignore
+    }
+  };
+}
+
+function shortDatasetVersion(version) {
+  const v = String(version || "");
+  if (!v) return "—";
+  if (v.length <= 26) return v;
+  return `${v.slice(0, 10)}…${v.slice(-12)}`;
+}
+
+function setStoryCallout(kind) {
+  if (!storyNarrativeEl) return;
+  storyNarrativeEl.classList.remove("warn", "danger");
+  if (kind === "warn") storyNarrativeEl.classList.add("warn");
+  if (kind === "danger") storyNarrativeEl.classList.add("danger");
+}
+
+function setStoryNext(items) {
+  if (!storyNextListEl) return;
+  storyNextListEl.textContent = "";
+  for (const text of Array.isArray(items) ? items : []) {
+    const li = document.createElement("li");
+    li.textContent = String(text);
+    storyNextListEl.appendChild(li);
+  }
+}
+
+function renderStory() {
+  if (!storyTitleEl || !storySubtitleEl || !storyNarrativeEl || !storyEl) return;
+
+  if (currentPage === "overview") {
+    storyEl.classList.add("hidden");
+    return;
+  }
+  storyEl.classList.remove("hidden");
+
+  const status = dataHub.state.status;
+  const trends = dataHub.state.trends;
+  const diag = dataHub.state.diagnostics;
+  const alerts = dataHub.state.alerts;
+
+  const lastMs = status?.observations_last_timestamp_utc ? parseIsoToMs(status.observations_last_timestamp_utc) : null;
+  const ageText = lastMs != null ? formatAge(Math.max(0, (Date.now() - lastMs) / 1000)) : "—";
+  const ok = status?.last_ingest_ok;
+  const failures = typeof status?.ingest_consecutive_failures === "number" ? status.ingest_consecutive_failures : 0;
+  const backoff = typeof status?.ingest_backoff_seconds === "number" ? status.ingest_backoff_seconds : 0;
+  const rlCount = typeof status?.ingest_rate_limit?.count_1h === "number" ? status.ingest_rate_limit.count_1h : null;
+
+  setCardValue(kpiDataAgeCardEl, ageText);
+  setCardValue(
+    kpiIngestCardEl,
+    ok === true ? (failures > 0 ? `OK (failures=${failures})` : "OK") : ok === false ? "ERROR" : "—"
+  );
+  setCardValue(kpi429CardEl, rlCount != null ? String(Math.round(rlCount)) : "—");
+  setCardValue(kpiDatasetCardEl, shortDatasetVersion(status?.dataset_version));
+
+  const storyBits = [];
+  storyBits.push(`Data age: ${ageText}.`);
+  if (ok === true) storyBits.push("Ingestion is healthy.");
+  else if (ok === false) storyBits.push("Ingestion is reporting errors.");
+  if (failures > 0) storyBits.push(`Consecutive failures: ${failures}.`);
+  if (backoff > 0) storyBits.push(`Backoff: ${Math.round(backoff)}s.`);
+  if (rlCount != null && rlCount > 0) storyBits.push(`429 (last 1h): ${Math.round(rlCount)}.`);
+
+  const trendSummary = trends?.summary || null;
+  if (trendSummary && typeof trendSummary.max_backoff_seconds_24h === "number") {
+    storyBits.push(`Max backoff (24h): ${Math.round(trendSummary.max_backoff_seconds_24h)}s.`);
+  }
+
+  let calloutKind = null;
+  if (ok === false) calloutKind = "danger";
+  else if (failures > 0 || (rlCount != null && rlCount >= 10)) calloutKind = "warn";
+  setStoryCallout(calloutKind);
+
+  const page = currentPage;
+  if (page === "explore") {
+    storyTitleEl.textContent = "Explore congestion hotspots on the map";
+    storySubtitleEl.textContent = selectedSegmentId
+      ? `Selected segment: ${String(selectedSegmentId)}. Use Hotspots to color the network, then load a time series.`
+      : "Pan/zoom, load hotspots for the current bounds, then click a segment to inspect time series.";
+
+    if (kpiPage1LabelEl) kpiPage1LabelEl.textContent = "Hotspots";
+    if (kpiPage1ValueEl) kpiPage1ValueEl.textContent = hotspotsLoaded ? `loaded=${hotspotRows.length}` : "not loaded";
+    if (kpiPage2LabelEl) kpiPage2LabelEl.textContent = "Events";
+    if (kpiPage2ValueEl) kpiPage2ValueEl.textContent = eventsLoaded ? `loaded=${events.length}` : "not loaded";
+
+    if (exploreStoryCollapsedSummaryEl) {
+      const parts = [];
+      parts.push(hotspotsLoaded ? `hotspots=${hotspotRows.length}` : "hotspots=—");
+      if (selectedSegmentId) parts.push(`seg=${String(selectedSegmentId)}`);
+      parts.push(eventsLoaded ? `events=${events.length}` : "events=—");
+      exploreStoryCollapsedSummaryEl.textContent = parts.join(" • ");
+    }
+
+    setStoryButton(storyPrimaryButtonEl, { label: "Load hotspots", onClick: () => loadHotspots().catch(() => {}) });
+    setStoryButton(storySecondaryButtonEl, { label: "Load events", onClick: () => loadEvents().catch(() => {}) });
+    setStoryButton(storyTertiaryButtonEl, { label: "Copy link", onClick: () => copyShareLink().catch(() => {}) });
+
+    storyNarrativeEl.textContent = storyBits.join(" ");
+    setStoryNext([
+      "1) Click “Load hotspots” to paint congestion on the map (it is bounded by the visible area).",
+      "2) Click a segment to load its time series (or use the dropdown).",
+      "3) Use Spotlight + Focus to keep the story centered on your selection.",
+    ]);
+    return;
+  }
+
+  if (page === "timeseries") {
+    const entity = entityTypeEl?.value === "corridor" ? "corridor" : "segment";
+    const selected = entity === "corridor" ? selectedCorridorId : selectedSegmentId;
+    const metrics = getTimeseriesDerivedMetrics();
+
+    storyTitleEl.textContent = "Time series analysis";
+    storySubtitleEl.textContent = selected
+      ? `Selected ${entity}: ${String(selected)}. Use the layer toggles to compare speed / baseline / anomalies.`
+      : "Select a segment/corridor first, then load a time series for the chosen time window.";
+
+    if (kpiPage1LabelEl) kpiPage1LabelEl.textContent = "Drop vs baseline";
+    if (kpiPage1ValueEl)
+      kpiPage1ValueEl.textContent =
+        metrics?.dropVsBaselinePct == null || !Number.isFinite(metrics.dropVsBaselinePct) ? "—" : `${metrics.dropVsBaselinePct.toFixed(1)}%`;
+    if (kpiPage2LabelEl) kpiPage2LabelEl.textContent = "Coverage";
+    if (kpiPage2ValueEl)
+      kpiPage2ValueEl.textContent =
+        metrics?.coveragePct == null || !Number.isFinite(metrics.coveragePct) ? "—" : `${metrics.coveragePct.toFixed(1)}%`;
+
+    setStoryButton(storyPrimaryButtonEl, { label: "Load time series", onClick: () => loadTimeseries().catch(() => {}) });
+    setStoryButton(storySecondaryButtonEl, { label: "Use 24h window", onClick: () => quickUse24hWindow() });
+    setStoryButton(storyTertiaryButtonEl, { label: "Open Explore", onClick: () => navigateToPage("explore") });
+
+    storyNarrativeEl.textContent = storyBits.join(" ");
+    setStoryNext([
+      "1) Pick a segment/corridor, then click “Load time series”.",
+      "2) Toggle Baseline and Event window overlays to explain changes.",
+      "3) Use brush selection to set the global time window (then Apply).",
+    ]);
+    return;
+  }
+
+  if (page === "events") {
+    const eventsExists = Boolean(diag?.events_csv?.exists);
+    const evCount = eventsLoaded ? events.length : 0;
+    const selected = selectedEventId ? String(selectedEventId) : null;
+    const linkedText = (() => {
+      if (!selected) return "—";
+      if (!lastEventLinksInfo) return "—";
+      if (lastEventLinksInfo.loading) return "loading";
+      if (typeof lastEventLinksInfo.count === "number") return String(Math.round(lastEventLinksInfo.count));
+      return "—";
+    })();
+
+    storyTitleEl.textContent = "Events: build an incident story";
+    storySubtitleEl.textContent = eventsExists
+      ? "Load events for the current map bounds, then select one to view impact overlays and linked hotspots."
+      : "Events dataset is missing (often due to upstream rate limiting). Use the fix command and wait for the timer.";
+
+    if (kpiPage1LabelEl) kpiPage1LabelEl.textContent = "Linked hotspots";
+    if (kpiPage1ValueEl) kpiPage1ValueEl.textContent = linkedText;
+    if (kpiPage2LabelEl) kpiPage2LabelEl.textContent = "Loaded events";
+    if (kpiPage2ValueEl) kpiPage2ValueEl.textContent = eventsLoaded ? String(evCount) : eventsExists ? "available" : "missing";
+
+    setStoryButton(storyPrimaryButtonEl, {
+      label: eventsExists ? "Load events" : "Copy events fix",
+      onClick: eventsExists
+        ? () => loadEvents().catch(() => {})
+        : () => copyText(EVENTS_FIX_COMMAND).then(() => setStatus("Events fix command copied to clipboard.")),
+    });
+    setStoryButton(storySecondaryButtonEl, {
+      label: "Relax filters",
+      onClick: () => eventsRelaxFiltersButton?.click(),
+      hidden: !eventsRelaxFiltersButton,
+    });
+    setStoryButton(storyTertiaryButtonEl, { label: "Copy link", onClick: () => copyShareLink().catch(() => {}) });
+
+    if (!eventsExists) setStoryCallout("danger");
+    storyNarrativeEl.textContent = storyBits.join(" ");
+    setStoryNext([
+      "1) Click “Load events” to place markers (bounded by current map view).",
+      "2) Select an event to fetch impact summary and draw the overlay.",
+      "3) Use search/type filters and keep the overlay in sync with what you see.",
+    ]);
+    return;
+  }
+
+  if (page === "rankings") {
+    const type = rankingTypeEl?.value || "segments";
+    const totalCount = rankingsLoaded ? lastRankings.length : 0;
+    const filteredCount = rankingsLoaded ? filterRankingsByQuery(lastRankings, type).length : 0;
+
+    storyTitleEl.textContent = "Rankings: find unstable segments/corridors";
+    storySubtitleEl.textContent =
+      "Load rankings, filter/search, then click a row to jump to the map and sync selection for deeper inspection.";
+
+    if (kpiPage1LabelEl) kpiPage1LabelEl.textContent = "Filtered";
+    if (kpiPage1ValueEl)
+      kpiPage1ValueEl.textContent = rankingsLoaded ? `${filteredCount}/${totalCount}` : "—";
+    if (kpiPage2LabelEl) kpiPage2LabelEl.textContent = "Type";
+    if (kpiPage2ValueEl) kpiPage2ValueEl.textContent = String(type);
+
+    setStoryButton(storyPrimaryButtonEl, { label: "Load rankings", onClick: () => loadRankings().catch(() => {}) });
+    setStoryButton(storySecondaryButtonEl, { label: "Min samples = 1", onClick: () => quickSetMinSamplesOne() });
+    setStoryButton(storyTertiaryButtonEl, { label: "Open Explore", onClick: () => navigateToPage("explore") });
+
+    storyNarrativeEl.textContent = storyBits.join(" ");
+    setStoryNext([
+      "1) Click “Load rankings” to compute worst reliability (time window affects results).",
+      "2) Use search + sort to narrow to the corridor/road you care about.",
+      "3) Click a row to focus the map and auto-load time series.",
+    ]);
+    return;
+  }
+
+  if (page === "pipeline") {
+    const byCategory = alerts?.summary?.by_category || {};
+    const network = byCategory.network || 0;
+    const rateLimit = byCategory.rate_limit || 0;
+    const data = byCategory.data || 0;
+    const maxBackoff = typeof trendSummary?.max_backoff_seconds_24h === "number" ? trendSummary.max_backoff_seconds_24h : null;
+
+    storyTitleEl.textContent = "Pipeline health";
+    storySubtitleEl.textContent = "Monitor ingestion, rate limits, and common data issues without digging through logs.";
+
+    if (kpiPage1LabelEl) kpiPage1LabelEl.textContent = "Alerts (24h)";
+    if (kpiPage1ValueEl) kpiPage1ValueEl.textContent = `net:${network} rl:${rateLimit} data:${data}`;
+    if (kpiPage2LabelEl) kpiPage2LabelEl.textContent = "Max backoff (24h)";
+    if (kpiPage2ValueEl) kpiPage2ValueEl.textContent = maxBackoff != null ? `${Math.round(maxBackoff)}s` : "—";
+
+    setStoryButton(storyPrimaryButtonEl, {
+      label: "Refresh pipeline",
+      onClick: () =>
+        dataHub
+          .refreshAll({ includeStatus: true })
+          .then(() => {
+            renderPipelinePanel();
+            renderStory();
+            setStatus("Pipeline refreshed.");
+          })
+          .catch(() => {}),
+    });
+    setStoryButton(storySecondaryButtonEl, { label: "Open alerts", onClick: () => window.open(`${API_BASE}/ui/alerts?tail=400`, "_blank") });
+    setStoryButton(storyTertiaryButtonEl, {
+      label: "Copy events fix",
+      onClick: () => copyText(EVENTS_FIX_COMMAND).then(() => setStatus("Events fix command copied to clipboard.")),
+    });
+
+    storyNarrativeEl.textContent = storyBits.join(" ");
+    setStoryNext([
+      "1) If you see network/rate_limit alerts, increase MIN_REQUEST_INTERVAL_SECONDS and reduce ingest frequency.",
+      "2) If data alerts appear, open /ui/quality and /ui/diagnostics for concrete missing-file reasons.",
+      "3) Use dataset version changes to confirm new data is arriving over time.",
+    ]);
+    return;
+  }
+}
+
+function initOverviewActions() {
+  if (overviewOpenExploreButton) overviewOpenExploreButton.addEventListener("click", () => navigateToPage("explore"));
+  if (overviewCopyLinkButton) overviewCopyLinkButton.addEventListener("click", copyShareLink);
+  if (overviewLoadHotspotsButton)
+    overviewLoadHotspotsButton.addEventListener("click", () => navigateToPage("explore", { action: "load_hotspots" }));
+  if (overviewLoadRankingsButton)
+    overviewLoadRankingsButton.addEventListener("click", () => navigateToPage("rankings", { action: "load_rankings" }));
+  if (overviewLoadEventsButton)
+    overviewLoadEventsButton.addEventListener("click", () => navigateToPage("events", { action: "load_events" }));
+  if (overviewQuick24hButton) overviewQuick24hButton.addEventListener("click", () => quickUse24hWindow());
+  if (overviewMinSamples1Button) overviewMinSamples1Button.addEventListener("click", () => quickSetMinSamplesOne());
+  if (overviewCopyEventsFixButton)
+    overviewCopyEventsFixButton.addEventListener("click", async () => {
+      await copyText(EVENTS_FIX_COMMAND);
+      setStatus("Events fix command copied to clipboard.");
+    });
+}
+
+function getTimeseriesLayerState() {
+  const state = getNested(uiState, "timeseries.layers", null);
+  return {
+    speed: state?.speed !== false,
+    volume: state?.volume !== false,
+    baseline: state?.baseline !== false,
+    anomalies: Boolean(state?.anomalies),
+    eventWindow: state?.eventWindow !== false,
+  };
+}
+
+function saveTimeseriesLayerState(next) {
+  uiState.timeseries = uiState.timeseries || {};
+  uiState.timeseries.layers = { ...(uiState.timeseries.layers || {}), ...(next || {}) };
+  saveUiState(uiState);
+}
+
+function syncTimeseriesControlsFromState() {
+  const s = getTimeseriesLayerState();
+  if (tsLayerSpeedEl) tsLayerSpeedEl.checked = Boolean(s.speed);
+  if (tsLayerVolumeEl) tsLayerVolumeEl.checked = Boolean(s.volume);
+  if (tsLayerBaselineEl) tsLayerBaselineEl.checked = Boolean(s.baseline);
+  if (tsLayerAnomaliesEl) tsLayerAnomaliesEl.checked = Boolean(s.anomalies);
+  if (tsLayerEventWindowEl) tsLayerEventWindowEl.checked = Boolean(s.eventWindow);
+}
+
+function initTimeseriesControls() {
+  syncTimeseriesControlsFromState();
+  const onChange = () => {
+    saveTimeseriesLayerState({
+      speed: Boolean(tsLayerSpeedEl?.checked),
+      volume: Boolean(tsLayerVolumeEl?.checked),
+      baseline: Boolean(tsLayerBaselineEl?.checked),
+      anomalies: Boolean(tsLayerAnomaliesEl?.checked),
+      eventWindow: Boolean(tsLayerEventWindowEl?.checked),
+    });
+    // Re-render best-effort without re-fetch.
+    if (lastTimeseries && Array.isArray(lastTimeseries.points)) {
+      renderTimeseriesInsights();
+      renderTimeseries(lastTimeseries.points, {
+        title: getEntityTitle(lastTimeseries.entity),
+        anomalies: lastTimeseries.anomalies,
+      });
+    }
+  };
+  if (tsLayerSpeedEl) tsLayerSpeedEl.addEventListener("change", onChange);
+  if (tsLayerVolumeEl) tsLayerVolumeEl.addEventListener("change", onChange);
+  if (tsLayerBaselineEl) tsLayerBaselineEl.addEventListener("change", onChange);
+  if (tsLayerAnomaliesEl) tsLayerAnomaliesEl.addEventListener("change", onChange);
+  if (tsLayerEventWindowEl) tsLayerEventWindowEl.addEventListener("change", onChange);
+
+  if (tsOpenExploreButton) tsOpenExploreButton.addEventListener("click", () => navigateToPage("explore"));
+
+  if (tsApplyBrushButton)
+    tsApplyBrushButton.addEventListener("click", () => {
+      if (!pendingBrushRange) return;
+      const startDt = new Date(pendingBrushRange.start);
+      const endDt = new Date(pendingBrushRange.end);
+      if (!Number.isFinite(startDt.getTime()) || !Number.isFinite(endDt.getTime()) || endDt <= startDt) return;
+      if (followLatestEl) followLatestEl.checked = false;
+      startEl.value = toLocalInputValue(startDt);
+      endEl.value = toLocalInputValue(endDt);
+      pendingBrushRange = null;
+      if (tsApplyBrushButton) tsApplyBrushButton.classList.add("hidden");
+      scheduleUrlSync();
+      loadTimeseries();
+      if (hotspotsLoaded) loadHotspots();
+      if (rankingsLoaded) loadRankings();
+      if (eventsWithinRangeEl?.checked) applyEventsFilters();
+      setStatus("Applied brush to time window.");
+    });
+}
+
+function getTimeseriesDerivedMetrics() {
+  const entity = lastTimeseries?.entity;
+  const points = Array.isArray(lastTimeseries?.points) ? lastTimeseries.points : [];
+  const range = lastTimeseries?.range || getIsoRange();
+
+  if (!entity || !entity.id || !points.length) return null;
+
+  const speeds = points.map((p) => (p?.speed_kph == null ? NaN : Number(p.speed_kph))).filter((v) => Number.isFinite(v));
+  const meanSpeedKph = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : null;
+
+  const threshold = getNested(uiState, "overrides.reliability.congestion_speed_threshold_kph", null);
+  const thr = threshold != null ? Number(threshold) : null;
+  const congestionFrequency = meanSpeedKph != null && thr != null ? speeds.filter((v) => v <= thr).length / speeds.length : null;
+
+  let expected = null;
+  if (range && lastTimeseries?.minutes) {
+    const startMs = Date.parse(range.start);
+    const endMs = Date.parse(range.end);
+    const minutes = Number(lastTimeseries.minutes);
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && Number.isFinite(minutes) && minutes > 0) {
+      expected = Math.max(1, Math.round((endMs - startMs) / (minutes * 60 * 1000)));
+    }
+  }
+  const coveragePct = expected != null ? (points.length / expected) * 100 : null;
+
+  let baselineMedianSpeedKph = null;
+  if (entity.type === "segment" && hotspotRows && hotspotRows.length) {
+    const row = hotspotRows.find((r) => r && String(r.segment_id) === String(entity.id));
+    const v = row?.baseline_median_speed_kph;
+    baselineMedianSpeedKph = v != null && Number.isFinite(Number(v)) ? Number(v) : null;
+  }
+  const dropVsBaselinePct =
+    meanSpeedKph != null && baselineMedianSpeedKph != null && baselineMedianSpeedKph > 0
+      ? ((baselineMedianSpeedKph - meanSpeedKph) / baselineMedianSpeedKph) * 100
+      : null;
+
+  return {
+    meanSpeedKph,
+    congestionFrequency,
+    coveragePct,
+    baselineMedianSpeedKph,
+    dropVsBaselinePct,
+    thresholdKph: thr,
+  };
+}
+
+function renderTimeseriesInsights() {
+  if (!timeseriesKpisEl || !timeseriesNarrativeEl) return;
+  if (currentPage !== "timeseries") return;
+
+  const entity = lastTimeseries?.entity;
+  const points = Array.isArray(lastTimeseries?.points) ? lastTimeseries.points : [];
+
+  const metrics = getTimeseriesDerivedMetrics();
+  if (!entity?.id) {
+    renderEmptyState(timeseriesKpisEl, {
+      title: "No selection",
+      text: "Select a segment/corridor and load a time series to see insights.",
+      actions: [{ label: "Open Explore", onClick: () => navigateToPage("explore") }],
+    });
+    if (timeseriesKpisEl.firstElementChild) timeseriesKpisEl.firstElementChild.style.gridColumn = "1 / -1";
+    timeseriesNarrativeEl.textContent = "Select a segment/corridor and load a time series to see insights.";
+    return;
+  }
+
+  if (!points.length || !metrics) {
+    const minSamples = getEffectiveMinSamples();
+    const hours = getRangeHours(getCurrentRangeOrNull());
+    const parts = [];
+    parts.push("No observations were returned for the current selection/time window.");
+    if (hours != null) parts.push(`Window: ${hours.toFixed(1)}h`);
+    if (minSamples != null) parts.push(`Min samples: ${minSamples}`);
+    parts.push("Try widening the window, or lowering Min samples.");
+
+    const actions = [];
+    actions.push({ label: "Use 24h window", onClick: () => quickUse24hWindow() });
+    if (typeof minSamples === "number" && minSamples > 1) actions.push({ label: "Min samples = 1", onClick: () => quickSetMinSamplesOne() });
+    actions.push({ label: "Reload time series", onClick: () => loadTimeseries().catch(() => {}) });
+
+    renderEmptyState(timeseriesKpisEl, {
+      title: "No time series data",
+      text: parts.join(" "),
+      actions,
+    });
+    if (timeseriesKpisEl.firstElementChild) timeseriesKpisEl.firstElementChild.style.gridColumn = "1 / -1";
+    timeseriesNarrativeEl.textContent = parts.join(" ");
+    return;
+  }
+
+  const fmt = (v, suffix = "") => (v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}${suffix}`);
+  const fmtInt = (v) => (v == null || !Number.isFinite(v) ? "—" : `${Math.round(v)}`);
+
+  timeseriesKpisEl.innerHTML = [
+    `<div class="kpi"><div class="kpi-label">Mean speed</div><div class="kpi-value mono">${fmt(metrics.meanSpeedKph, " kph")}</div></div>`,
+    `<div class="kpi"><div class="kpi-label">Congestion freq</div><div class="kpi-value mono">${metrics.congestionFrequency == null ? "—" : `${Math.round(metrics.congestionFrequency * 100)}%`}</div></div>`,
+    `<div class="kpi"><div class="kpi-label">Coverage</div><div class="kpi-value mono">${metrics.coveragePct == null ? "—" : `${metrics.coveragePct.toFixed(1)}%`}</div></div>`,
+    `<div class="kpi"><div class="kpi-label">Baseline median</div><div class="kpi-value mono">${fmt(metrics.baselineMedianSpeedKph, " kph")}</div></div>`,
+    `<div class="kpi"><div class="kpi-label">Drop vs baseline</div><div class="kpi-value mono">${fmt(metrics.dropVsBaselinePct, "%")}</div></div>`,
+  ].join("");
+
+  const parts = [];
+  parts.push(`${getEntityTitle(entity)} • points=${fmtInt(points.length)}.`);
+  if (metrics.dropVsBaselinePct != null) parts.push(`Relative to baseline, speed is lower by ${metrics.dropVsBaselinePct.toFixed(0)}%.`);
+  if (metrics.coveragePct != null) parts.push(`Coverage is ${metrics.coveragePct.toFixed(0)}% (missing data reduces confidence).`);
+  if (metrics.thresholdKph != null && metrics.congestionFrequency != null)
+    parts.push(
+      `Congestion frequency (≤ ${Math.round(metrics.thresholdKph)} kph) is ${Math.round(metrics.congestionFrequency * 100)}%.`
+    );
+  timeseriesNarrativeEl.textContent = parts.join(" ");
+}
+
+function initMapToolbarAndTips() {
+  syncMapToolbarFromState();
+  applyOverlayVisibility();
+  renderNextStepCard();
+
+  if (mapToggleSegmentsEl) {
+    mapToggleSegmentsEl.addEventListener("change", () => {
+      showSegments = Boolean(mapToggleSegmentsEl.checked);
+      persistOverlays();
+      applyOverlayVisibility();
+      updateSelectionStyles();
+      renderNextStepCard();
+    });
+  }
+
+  if (mapToggleHotspotsEl) {
+    mapToggleHotspotsEl.addEventListener("change", () => {
+      showHotspots = Boolean(mapToggleHotspotsEl.checked);
+      if (toggleHotspotsEl) toggleHotspotsEl.checked = Boolean(showHotspots);
+      persistOverlays();
+      applyOverlayVisibility();
+      renderNextStepCard();
+    });
+  }
+
+  if (mapToggleEventsEl) {
+    mapToggleEventsEl.addEventListener("change", () => {
+      showEvents = Boolean(mapToggleEventsEl.checked);
+      if (toggleEventsEl) toggleEventsEl.checked = Boolean(showEvents);
+      persistOverlays();
+      applyOverlayVisibility();
+      renderNextStepCard();
+    });
+  }
+
+  if (mapToggleImpactEl) {
+    mapToggleImpactEl.addEventListener("change", () => {
+      showImpact = Boolean(mapToggleImpactEl.checked);
+      if (toggleImpactEl) toggleImpactEl.checked = Boolean(showImpact);
+      persistOverlays();
+      applyOverlayVisibility();
+      renderNextStepCard();
+    });
+  }
+
+  if (mapSpotlightEl) {
+    mapSpotlightEl.addEventListener("change", () => {
+      spotlightMode = Boolean(mapSpotlightEl.checked);
+      persistOverlays();
+      updateSelectionStyles();
+      renderNextStepCard();
+    });
+  }
+
+  if (mapFocusButton) mapFocusButton.addEventListener("click", () => focusSelected());
+  if (mapReloadHotspotsButton)
+    mapReloadHotspotsButton.addEventListener("click", async () => {
+      showHotspots = true;
+      if (toggleHotspotsEl) toggleHotspotsEl.checked = true;
+      if (mapToggleHotspotsEl) mapToggleHotspotsEl.checked = true;
+      persistOverlays();
+      applyOverlayVisibility();
+      await loadHotspots();
+    });
+  if (mapReloadEventsButton)
+    mapReloadEventsButton.addEventListener("click", async () => {
+      showEvents = true;
+      if (toggleEventsEl) toggleEventsEl.checked = true;
+      if (mapToggleEventsEl) mapToggleEventsEl.checked = true;
+      persistOverlays();
+      applyOverlayVisibility();
+      await loadEvents();
+    });
+  if (mapClearSelectionButton) mapClearSelectionButton.addEventListener("click", clearSelection);
+
+  if (mapNextStepCloseButton)
+    mapNextStepCloseButton.addEventListener("click", () => {
+      nextStepDismissed = true;
+      persistOverlays();
+      if (mapNextStepEl) mapNextStepEl.classList.add("hidden");
+    });
+  if (mapShowNextStepButton)
+    mapShowNextStepButton.addEventListener("click", () => {
+      nextStepDismissed = false;
+      persistOverlays();
+      renderNextStepCard();
+    });
 }
 
 function parseLocalDateTimeInput(value) {
@@ -2203,16 +3501,20 @@ function initKeyboardShortcuts() {
     if (key === "h") {
       showHotspots = !showHotspots;
       if (toggleHotspotsEl) toggleHotspotsEl.checked = Boolean(showHotspots);
+      if (mapToggleHotspotsEl) mapToggleHotspotsEl.checked = Boolean(showHotspots);
       persistOverlays();
       applyOverlayVisibility();
+      renderNextStepCard();
       ev.preventDefault();
       return;
     }
     if (key === "e") {
       showEvents = !showEvents;
       if (toggleEventsEl) toggleEventsEl.checked = Boolean(showEvents);
+      if (mapToggleEventsEl) mapToggleEventsEl.checked = Boolean(showEvents);
       persistOverlays();
       applyOverlayVisibility();
+      renderNextStepCard();
       ev.preventDefault();
       return;
     }
@@ -2236,6 +3538,35 @@ function formatSegmentLabel(segment) {
 function formatCorridorLabel(corridor) {
   const name = corridor.corridor_name ? ` - ${corridor.corridor_name}` : "";
   return `${corridor.corridor_id}${name}`;
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function buildSegmentPopupHtml(seg) {
+  if (!seg) return "<b>Segment</b>";
+  const id = escapeHtml(seg.segment_id);
+  const road = seg.road_name ? escapeHtml(seg.road_name) : "—";
+  const dir = seg.direction ? escapeHtml(seg.direction) : "";
+  const city = seg.city ? escapeHtml(seg.city) : "";
+  const line2 = [road, dir].filter(Boolean).join(" · ");
+  const line3 = city ? `City: ${city}` : "Click to load time series";
+  return `<b>${id}</b><br/><span class="mono">${line2 || "—"}</span><br/><span>${line3}</span>`;
+}
+
+function buildEventPopupHtml(event) {
+  if (!event) return "<b>Event</b>";
+  const id = escapeHtml(event.event_id);
+  const type = event.event_type ? escapeHtml(event.event_type) : "Event";
+  const time = event.start_time ? escapeHtml(formatEventTimeLocal(event.start_time)) : "—";
+  const sev = event.severity != null ? `sev ${escapeHtml(event.severity)}` : "sev —";
+  return `<b>${type}</b><br/><span class="mono">${time} · ${sev}</span><br/><span class="mono">${id}</span>`;
 }
 
 function normalizeText(value) {
@@ -2685,8 +4016,11 @@ function renderHotspots(rows, metric, colorMode = "metric") {
     if (row.coverage_pct != null && Number.isFinite(Number(row.coverage_pct))) {
       extras.push(`cov=${Number(row.coverage_pct).toFixed(1)}%`);
     }
-    const extraText = extras.length ? `\n${extras.join(" · ")}` : "";
-    marker.bindPopup(`${row.segment_id} · ${label}: ${formatted}${extraText}`, { closeButton: false });
+    const extraText = extras.length ? `<br/><span class="mono">${escapeHtml(extras.join(" · "))}</span>` : "";
+    marker.bindPopup(
+      `<b>${escapeHtml(row.segment_id)}</b><br/><span class="mono">${escapeHtml(label)}: ${escapeHtml(formatted)}</span>${extraText}`,
+      { closeButton: false }
+    );
     marker.on("click", () => {
       selectSegment(String(row.segment_id), { centerMap: false });
       loadTimeseries();
@@ -2751,6 +4085,7 @@ async function loadHotspots() {
       hotspotsLoaded = true;
       renderHotspots(hotspotRows, metric, hotspotColorModeEl?.value || "metric");
       setStatus(`Hotspots loaded from cache (${hotspotRows.length} rows, cached_at=${cached.at_utc || "?"}).`);
+      renderStory();
       return;
     }
     hotspotsLoaded = false;
@@ -2758,12 +4093,16 @@ async function loadHotspots() {
     updateHotspotInfo("Failed to load hotspots. Ensure the API includes /map/snapshot and a dataset is built.");
     setStatus(`Failed to load hotspots: ${err.message}`);
     updateHotspotsHint({ empty: false });
+    renderNextStepCard();
+    renderStory();
     return;
   }
 
   hotspotsLoaded = true;
   renderHotspots(hotspotRows, metric, colorMode);
   setStatus(`Hotspots loaded (${hotspotRows.length} rows).`);
+  renderNextStepCard();
+  renderStory();
 }
 
 function applyHotspotStateToForm() {
@@ -2848,6 +4187,11 @@ async function loadAnomalies(entity, range, minutes) {
 }
 
 function renderTimeseries(points, { title, anomalies } = {}) {
+  if (typeof Plotly === "undefined") {
+    if (chartEl) chartEl.textContent = "Plotly failed to load (check network/CDN access).";
+    setStatus("Plotly failed to load.");
+    return;
+  }
   if (!points.length) {
     Plotly.purge(chartEl);
     setStatus("No data returned for this time range.");
@@ -2855,12 +4199,15 @@ function renderTimeseries(points, { title, anomalies } = {}) {
   }
 
   const colors = themeColors();
+  const layers = getTimeseriesLayerState();
+  const entity = lastTimeseries?.entity || null;
   const x = points.map((p) => p.timestamp);
   const speed = points.map((p) => p.speed_kph);
   const volume = points.map((p) => p.volume);
 
-  const traces = [
-    {
+  const traces = [];
+  if (layers.speed) {
+    traces.push({
       x,
       y: speed,
       type: "scatter",
@@ -2868,16 +4215,18 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       name: "Speed (kph)",
       line: { color: colors.accentHex, width: 2 },
       yaxis: "y",
-    },
-    {
+    });
+  }
+  if (layers.volume) {
+    traces.push({
       x,
       y: volume,
       type: "bar",
       name: "Volume",
       marker: { color: rgba(colors.accentRgb, 0.18) },
       yaxis: "y2",
-    },
-  ];
+    });
+  }
 
   if (anomalies && anomalies.length) {
     const byTs = new Map(anomalies.map((a) => [a.timestamp, a]));
@@ -2896,25 +4245,29 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       }
     }
 
-    traces.push({
-      x,
-      y: baseline,
-      type: "scatter",
-      mode: "lines",
-      name: "Baseline (mean)",
-      line: { color: colors.muted, width: 1, dash: "dot" },
-      yaxis: "y",
-    });
+    if (layers.baseline) {
+      traces.push({
+        x,
+        y: baseline,
+        type: "scatter",
+        mode: "lines",
+        name: "Baseline (mean)",
+        line: { color: colors.muted, width: 1, dash: "dot" },
+        yaxis: "y",
+      });
+    }
 
-    traces.push({
-      x: anomalyX,
-      y: anomalyY,
-      type: "scatter",
-      mode: "markers",
-      name: "Anomaly",
-      marker: { size: 7, color: colors.dangerHex, line: { width: 1, color: "rgba(15,23,42,0.18)" } },
-      yaxis: "y",
-    });
+    if (layers.anomalies) {
+      traces.push({
+        x: anomalyX,
+        y: anomalyY,
+        type: "scatter",
+        mode: "markers",
+        name: "Anomaly",
+        marker: { size: 7, color: colors.dangerHex, line: { width: 1, color: "rgba(15,23,42,0.18)" } },
+        yaxis: "y",
+      });
+    }
   }
 
   const layout = {
@@ -2930,6 +4283,7 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       type: "date",
       gridcolor: colors.panelBorder,
       tickfont: { color: colors.muted, size: 10 },
+      rangeslider: { visible: true, bgcolor: "rgba(0,0,0,0)" },
     },
     yaxis: {
       title: { text: "Speed (kph)", font: { size: 10, color: colors.muted } },
@@ -2949,13 +4303,64 @@ function renderTimeseries(points, { title, anomalies } = {}) {
       y: 1.12,
       font: { size: 10, color: colors.muted },
     },
+    shapes: [],
   };
+
+  if (layers.baseline && entity?.type === "segment" && hotspotRows && hotspotRows.length) {
+    const row = hotspotRows.find((r) => r && String(r.segment_id) === String(entity.id));
+    const v = row?.baseline_median_speed_kph;
+    const baselineMedian = v != null && Number.isFinite(Number(v)) ? Number(v) : null;
+    if (baselineMedian != null) {
+      traces.push({
+        x,
+        y: x.map(() => baselineMedian),
+        type: "scatter",
+        mode: "lines",
+        name: "Baseline (median)",
+        line: { color: colors.muted, width: 1, dash: "dash" },
+        yaxis: "y",
+      });
+    }
+  }
+
+  if (layers.eventWindow && selectedEventId && lastEventImpact?.event?.start_time && lastEventImpact?.event?.end_time) {
+    layout.shapes.push({
+      type: "rect",
+      xref: "x",
+      yref: "paper",
+      x0: lastEventImpact.event.start_time,
+      x1: lastEventImpact.event.end_time,
+      y0: 0,
+      y1: 1,
+      fillcolor: rgba(colors.dangerRgb, 0.08),
+      line: { width: 0 },
+    });
+  }
 
   Plotly.react(chartEl, traces, layout, { responsive: true, displayModeBar: false });
   setStatus(`Loaded ${points.length} points.`);
+
+  try {
+    chartEl.removeAllListeners?.("plotly_relayout");
+  } catch (err) {
+    // ignore
+  }
+  chartEl.on?.("plotly_relayout", (ev) => {
+    if (!ev || typeof ev !== "object") return;
+    const start = ev["xaxis.range[0]"];
+    const end = ev["xaxis.range[1]"];
+    if (!start || !end) return;
+    pendingBrushRange = { start: String(start), end: String(end) };
+    if (tsApplyBrushButton) tsApplyBrushButton.classList.remove("hidden");
+  });
 }
 
 function renderEventImpactChart(impact) {
+  if (typeof Plotly === "undefined") {
+    if (chartEl) chartEl.textContent = "Plotly failed to load (check network/CDN access).";
+    setStatus("Plotly failed to load.");
+    return;
+  }
   const points = impact.timeseries || [];
   if (!points.length) {
     Plotly.purge(chartEl);
@@ -3112,6 +4517,8 @@ async function loadTimeseries() {
       });
     }
     renderTimeseries(points, { title: getEntityTitle(entity), anomalies });
+    renderTimeseriesInsights();
+    renderStory();
   } catch (err) {
     if (err?.name === "AbortError") return;
     setStatus(`Failed to load timeseries: ${err.message}`);
@@ -3120,12 +4527,14 @@ async function loadTimeseries() {
       text: `Failed to load time series: ${err.message}`,
       actions: [{ label: "Refresh health", onClick: () => refreshDataHealth() }],
     });
+    renderStory();
   }
 }
 
 function selectSegment(segmentId, { centerMap } = { centerMap: true }) {
   entityTypeEl.value = "segment";
   selectedSegmentId = segmentId;
+  selectedCorridorId = null;
   const seg = segmentsById.get(segmentId);
   updateSegmentInfo(seg);
   segmentSelectEl.value = segmentId;
@@ -3137,6 +4546,8 @@ function selectSegment(segmentId, { centerMap } = { centerMap: true }) {
   }
   updateSelectionStyles();
   scheduleUrlSync();
+  renderNextStepCard();
+  renderStory();
 }
 
 function centerMapOnCorridor(corridorId) {
@@ -3211,11 +4622,15 @@ function updateSelectionStyles() {
     }
     if (typeof marker.setRadius === "function") marker.setRadius(isSelected ? 9 : 7);
   }
+
+  applySpotlightStyles();
+  updateSelectionHalos();
 }
 
 function selectCorridor(corridorId, { centerMap } = { centerMap: false }) {
   entityTypeEl.value = "corridor";
   selectedCorridorId = corridorId;
+  selectedSegmentId = null;
   const corridor = corridorsById.get(corridorId);
   updateCorridorInfo(corridor);
   corridorSelectEl.value = corridorId;
@@ -3225,6 +4640,8 @@ function selectCorridor(corridorId, { centerMap } = { centerMap: false }) {
   }
   updateSelectionStyles();
   scheduleUrlSync();
+  renderNextStepCard();
+  renderStory();
 }
 
 function selectEvent(eventId, { centerMap } = { centerMap: true }) {
@@ -3239,6 +4656,9 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
   impactSegmentsLayer.clearLayers();
   lastEventImpact = null;
   updateSelectionStyles();
+  renderNextStepCard();
+  renderEventsStory();
+  renderStory();
 
   const marker = eventMarkerById.get(eventId);
   if (centerMap && marker) {
@@ -3258,6 +4678,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
     .then(({ items, reason }) => {
       lastEventLinksInfo = { loading: false, count: Array.isArray(items) ? items.length : 0, reason };
       updateEventInfo(event, lastEventImpact, lastEventLinksInfo);
+      renderEventsStory();
 
       linkedHotspotsLayer.clearLayers();
       if (!Array.isArray(items) || !items.length) return;
@@ -3289,6 +4710,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
       if (err?.name === "AbortError") return;
       lastEventLinksInfo = { loading: false, count: 0, reason: { code: "failed", message: err.message, suggestion: null } };
       updateEventInfo(event, lastEventImpact, lastEventLinksInfo);
+      renderEventsStory();
     });
 
   const minutes = minutesEl.value;
@@ -3314,6 +4736,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
       lastEventImpact = impact;
       updateEventInfo(event, impact, lastEventLinksInfo);
       renderEventImpactChart(impact);
+      renderEventsStory();
 
       if (impact.affected_segments && impact.affected_segments.length) {
         for (const seg of impact.affected_segments) {
@@ -3339,6 +4762,7 @@ function selectEvent(eventId, { centerMap } = { centerMap: true }) {
         actions: [{ label: "Refresh health", onClick: () => refreshDataHealth() }],
       });
       updateEventInfo(event, null, lastEventLinksInfo);
+      renderEventsStory();
     });
 }
 
@@ -3375,7 +4799,7 @@ async function loadSegments() {
       fillOpacity: 0.6,
     }).addTo(markers);
 
-    marker.bindPopup(formatSegmentLabel(seg), { closeButton: false });
+    marker.bindPopup(buildSegmentPopupHtml(seg), { closeButton: false });
     marker.on("click", () => {
       selectSegment(seg.segment_id, { centerMap: false });
       loadTimeseries();
@@ -3388,6 +4812,7 @@ async function loadSegments() {
   if (bounds) map.fitBounds(bounds.pad(0.08));
   updateSelectionStyles();
   setStatus(`Loaded ${segments.length} segments.`);
+  renderNextStepCard();
 }
 
 async function loadCorridors() {
@@ -3421,27 +4846,65 @@ function applySearchFilter() {
   populateSegmentSelect(filtered);
 }
 
+function filterRankingsByQuery(items, type) {
+  const q = normalizeText(rankingSearchEl ? rankingSearchEl.value : "");
+  if (!q) return items;
+  return items.filter((row) => {
+    if (type === "corridors") {
+      return normalizeText(row.corridor_id).includes(q) || normalizeText(row.corridor_name).includes(q);
+    }
+    return normalizeText(row.segment_id).includes(q);
+  });
+}
+
 function renderRankings(items, type) {
   rankingsEl.innerHTML = "";
   if (!items || !items.length) {
-    rankingsEl.textContent = "No rankings returned.";
+    const minSamples = getEffectiveMinSamples();
+    const hours = getRangeHours(getCurrentRangeOrNull());
+    const parts = [];
+    if (lastRankingsReason?.message) parts.push(lastRankingsReason.message);
+    parts.push("No rankings returned for the current settings.");
+    if (hours != null) parts.push(`Window: ${hours.toFixed(1)}h`);
+    if (minSamples != null) parts.push(`Min samples: ${minSamples}`);
+    if (lastRankingsReason?.suggestion) parts.push(lastRankingsReason.suggestion);
+
+    const actions = [];
+    actions.push({ label: "Use 24h window", onClick: () => quickUse24hWindow() });
+    if (typeof minSamples === "number" && minSamples > 1) actions.push({ label: "Min samples = 1", onClick: () => quickSetMinSamplesOne() });
+    actions.push({ label: "Reload rankings", onClick: () => loadRankings().catch(() => {}) });
+
+    renderEmptyState(rankingsEl, {
+      title: "No rankings",
+      text: parts.join(" "),
+      actions,
+    });
     updateRankingsHint({ empty: true });
     return;
   }
   updateRankingsHint({ empty: false });
 
-  const q = normalizeText(rankingSearchEl ? rankingSearchEl.value : "");
-  let filtered = items;
-  if (q) {
-    filtered = items.filter((row) => {
-      if (type === "corridors") {
-        return (
-          normalizeText(row.corridor_id).includes(q) ||
-          normalizeText(row.corridor_name).includes(q)
-        );
-      }
-      return normalizeText(row.segment_id).includes(q);
+  const filtered = filterRankingsByQuery(items, type);
+  if (!filtered.length) {
+    const q = normalizeText(rankingSearchEl ? rankingSearchEl.value : "");
+    const actions = [];
+    if (q && rankingSearchEl) {
+      actions.push({
+        label: "Clear search",
+        onClick: () => {
+          rankingSearchEl.value = "";
+          renderRankings(items, type);
+          renderStory();
+        },
+      });
+    }
+    actions.push({ label: "Reload rankings", onClick: () => loadRankings().catch(() => {}) });
+    renderEmptyState(rankingsEl, {
+      title: "No matches",
+      text: "No rankings match the current search query.",
+      actions,
     });
+    return;
   }
 
   const sortMode = rankingSortEl ? rankingSortEl.value : "rank";
@@ -3550,6 +5013,8 @@ async function loadRankings() {
     renderRankings(items, type);
     rankingsLoaded = true;
     setStatus(`Loaded ${items.length} ranking rows.`);
+    renderNextStepCard();
+    renderStory();
   } catch (err) {
     const cached = loadCached("rankings");
     if (cached && Array.isArray(cached.items)) {
@@ -3559,6 +5024,7 @@ async function loadRankings() {
       renderRankings(lastRankings, cachedType);
       rankingsLoaded = true;
       setStatus(`Rankings loaded from cache (${lastRankings.length} rows, cached_at=${cached.at_utc || "?"}).`);
+      renderStory();
       return;
     }
     rankingsLoaded = false;
@@ -3566,6 +5032,8 @@ async function loadRankings() {
     rankingsEl.textContent = "Failed to load rankings.";
     updateRankingsHint({ empty: false });
     setStatus(`Failed to load rankings: ${err.message}`);
+    renderNextStepCard();
+    renderStory();
   }
 }
 
@@ -3649,8 +5117,7 @@ function renderEventMarkers(items) {
       fillOpacity: 0.85,
     }).addTo(eventMarkers);
 
-    const label = `${event.event_id}${event.event_type ? ` - ${event.event_type}` : ""}`;
-    marker.bindPopup(label, { closeButton: false });
+    marker.bindPopup(buildEventPopupHtml(event), { closeButton: false });
     marker.on("click", () => selectEvent(event.event_id, { centerMap: false }));
     eventMarkerById.set(event.event_id, marker);
   }
@@ -3679,15 +5146,55 @@ function renderEvents(items) {
   eventsEl.innerHTML = "";
   if (!items || !items.length) {
     const parts = [];
+    const actions = [];
+
     if (Array.isArray(events) && events.length) {
       parts.push("No events match the current filters.");
-      parts.push("Try turning off “Only within current time range” or clearing the search box.");
+      if (eventsWithinRangeEl?.checked) parts.push("“Only within current time range” may be too strict.");
+      if (eventsSearchEl?.value) parts.push("Search query may be too narrow.");
+
+      if (eventsRelaxFiltersButton) {
+        actions.push({ label: "Relax filters", onClick: () => eventsRelaxFiltersButton.click() });
+      }
+      if (eventsWithinRangeEl?.checked) {
+        actions.push({
+          label: "Show all times",
+          onClick: () => {
+            eventsWithinRangeEl.checked = false;
+            uiState.events = uiState.events || {};
+            uiState.events.onlyWithinRange = false;
+            saveUiState(uiState);
+            applyEventsFilters();
+          },
+        });
+      }
+      if (eventsSearchEl?.value) {
+        actions.push({
+          label: "Clear search",
+          onClick: () => {
+            eventsSearchEl.value = "";
+            applyEventsFilters();
+          },
+        });
+      }
     } else {
-      if (lastEventsReason && lastEventsReason.message) parts.push(lastEventsReason.message);
-      parts.push("No events returned.");
-      if (lastEventsReason && lastEventsReason.suggestion) parts.push(lastEventsReason.suggestion);
+      if (lastEventsReason?.message) parts.push(lastEventsReason.message);
+      parts.push("No events returned for the current bbox/time window.");
+      if (lastEventsReason?.suggestion) parts.push(lastEventsReason.suggestion);
+
+      actions.push({ label: "Load events", onClick: () => loadEvents().catch(() => {}) });
+      actions.push({
+        label: "Copy events fix",
+        onClick: () => copyText(EVENTS_FIX_COMMAND).then(() => setStatus("Events fix command copied to clipboard.")),
+      });
+      actions.push({ label: "Use 24h window", onClick: () => quickUse24hWindow() });
     }
-    eventsEl.textContent = parts.join("\n");
+
+    renderEmptyState(eventsEl, {
+      title: "No events",
+      text: parts.join(" "),
+      actions,
+    });
     return;
   }
 
@@ -3767,6 +5274,8 @@ async function loadEvents() {
       populateEventsTypeOptions(events);
       applyEventsFilters();
       setStatus(`Events loaded from cache (${events.length} rows, cached_at=${cached.at_utc || "?"}).`);
+      renderNextStepCard();
+      renderStory();
       return;
     }
     eventsLoaded = false;
@@ -3797,6 +5306,9 @@ async function loadEvents() {
       showCopyFix: true,
     });
     setStatus(`Failed to load events: ${err.message}`);
+    renderNextStepCard();
+    renderEventsStory();
+    renderStory();
     return;
   }
 
@@ -3854,6 +5366,9 @@ async function loadEvents() {
     }
   }
   setStatus(`Loaded ${events.length} events (${getFilteredEvents(events).length} shown).`);
+  renderNextStepCard();
+  renderEventsStory();
+  renderStory();
 }
 
 function clearEvents() {
@@ -3988,8 +5503,17 @@ clearHotspotsButton.addEventListener("click", clearHotspots);
 hotspotMetricEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value, hotspotColorModeEl?.value || "metric"));
 if (hotspotColorModeEl)
   hotspotColorModeEl.addEventListener("change", () => renderHotspots(hotspotRows, hotspotMetricEl.value, hotspotColorModeEl.value));
-if (rankingSearchEl) rankingSearchEl.addEventListener("input", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
-if (rankingSortEl) rankingSortEl.addEventListener("change", () => rankingsLoaded && renderRankings(lastRankings, rankingTypeEl.value || "segments"));
+if (rankingSearchEl)
+  rankingSearchEl.addEventListener("input", () => {
+    if (!rankingsLoaded) return;
+    renderRankings(lastRankings, rankingTypeEl.value || "segments");
+    renderStory();
+  });
+if (rankingSortEl)
+  rankingSortEl.addEventListener("change", () => {
+    if (!rankingsLoaded) return;
+    renderRankings(lastRankings, rankingTypeEl.value || "segments");
+  });
 hotspotMetricEl.addEventListener("change", scheduleUrlSync);
 if (hotspotColorModeEl) hotspotColorModeEl.addEventListener("change", scheduleUrlSync);
 if (minutesEl) minutesEl.addEventListener("change", scheduleUrlSync);
@@ -4007,19 +5531,20 @@ if (endEl)
     scheduleUrlSync();
   });
 
-applyLayoutFromState();
-initThemeToggle();
-applyOverlayVisibility();
-initLayoutResizers();
-initPanelCollapse();
-initSettingsPanel();
-initShortcutsOverlay();
-initKeyboardShortcuts();
-initLivePanel();
-initHotspotAutoReload();
-initTimeseriesFollowLatest();
-initEventsPanel();
-initQuickGuides();
+	applyLayoutFromState();
+	initThemeToggle();
+	applyOverlayVisibility();
+	initLayoutResizers();
+	initPanelCollapse();
+	initSettingsPanel();
+  initMapToolbarAndTips();
+	initShortcutsOverlay();
+	initKeyboardShortcuts();
+	initLivePanel();
+	initHotspotAutoReload();
+	initTimeseriesFollowLatest();
+	initEventsPanel();
+	initQuickGuides();
 if (copyLinkButton) copyLinkButton.addEventListener("click", copyShareLink);
 if (exportSnapshotButton) exportSnapshotButton.addEventListener("click", exportSnapshot);
 if (exportSegmentsCsvButton)
@@ -4034,23 +5559,22 @@ if (dataHealthCopyCommandsButton)
     await copyText(cmds.join("\n"));
     setStatus("Fix commands copied to clipboard.");
   });
-if (pipelineRefreshButton)
-  pipelineRefreshButton.addEventListener("click", async () => {
-    await dataHub.refreshAll({ includeStatus: true });
-    renderPipelinePanel();
-    setStatus("Pipeline refreshed.");
-  });
-const eventsFixCommand = `systemctl --user start trafficpulse-events.service\njournalctl --user -u trafficpulse-events.service -n 120 --no-pager`;
-if (pipelineCopyEventsFixButton)
-  pipelineCopyEventsFixButton.addEventListener("click", async () => {
-    await copyText(eventsFixCommand);
-    setStatus("Events fix command copied to clipboard.");
-  });
-if (eventsCopyFixButton)
-  eventsCopyFixButton.addEventListener("click", async () => {
-    await copyText(eventsFixCommand);
-    setStatus("Events fix command copied to clipboard.");
-  });
+	if (pipelineRefreshButton)
+	  pipelineRefreshButton.addEventListener("click", async () => {
+	    await dataHub.refreshAll({ includeStatus: true });
+	    renderPipelinePanel();
+	    setStatus("Pipeline refreshed.");
+	  });
+	if (pipelineCopyEventsFixButton)
+	  pipelineCopyEventsFixButton.addEventListener("click", async () => {
+	    await copyText(EVENTS_FIX_COMMAND);
+	    setStatus("Events fix command copied to clipboard.");
+	  });
+	if (eventsCopyFixButton)
+	  eventsCopyFixButton.addEventListener("click", async () => {
+	    await copyText(EVENTS_FIX_COMMAND);
+	    setStatus("Events fix command copied to clipboard.");
+	  });
 
 loadUiDefaultsFromApi().then((defaults) => {
   if (defaults) applyDefaultsToForm(defaults);
@@ -4063,6 +5587,11 @@ loadUiDefaultsFromApi().then((defaults) => {
 
 setDefaultTimeRange();
 Promise.allSettled([loadSegments(), loadCorridors()]).then(() => {
+  const navAction = consumeNavAction();
+  if (navAction === "load_hotspots" && currentPage === "explore") loadHotspots().catch(() => {});
+  if (navAction === "load_rankings" && currentPage === "rankings") loadRankings().catch(() => {});
+  if (navAction === "load_events" && currentPage === "events") loadEvents().catch(() => {});
+
   if (pendingUrlSelection && pendingUrlSelection.type === "corridor") {
     const corridorId = String(pendingUrlSelection.id);
     if (corridorsById && corridorsById.has(corridorId)) {
