@@ -90,7 +90,14 @@ def _load_corridors_or_404() -> pd.DataFrame:
 
 @router.get("/corridors", response_model=list[CorridorMetadata])
 def list_corridors() -> list[CorridorMetadata]:
-    corridors = _load_corridors_or_404()
+    try:
+        corridors = _load_corridors_or_404()
+    except HTTPException as exc:
+        # Corridors are an optional, user-provided configuration file. Returning an empty list keeps
+        # the dashboard usable (and avoids noisy 404s in the browser) when corridors are not configured.
+        if exc.status_code == 404:
+            return []
+        raise
     meta = corridor_metadata(corridors)
     if meta.empty:
         return []

@@ -260,7 +260,16 @@ class AnalyticsSection(BaseModel):
 
 class CorsSection(BaseModel):
     allow_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:8000", "http://localhost:5173"]
+        # Dev defaults: support the API itself (8000), the docker-exposed UI/API (8003),
+        # and common frontend dev servers (5173).
+        default_factory=lambda: [
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://localhost:8003",
+            "http://127.0.0.1:8003",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
     )
 
 
