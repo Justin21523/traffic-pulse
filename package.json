@@ -1,0 +1,14 @@
+{
+  "name": "traffic-pulse",
+  "version": "1.0.0",
+  "description": "A frontend application for traffic pulse",
+  "private": true,
+  "scripts": {
+    "start:web": "python -m http.server 8003 --directory web",
+    "pw:install": "playwright install chromium",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  }
+}
