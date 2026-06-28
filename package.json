@@ -6,7 +6,12 @@
   "scripts": {
     "start:web": "python -m http.server 8003 --directory web",
     "pw:install": "playwright install chromium",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "demo:dev": "npm --prefix demo-app run dev",
+    "demo:build": "npm --prefix demo-app run build",
+    "demo:preview": "npm --prefix demo-app run preview",
+    "dev": "npm --prefix demo-app run dev",
+    "build": "npm --prefix demo-app run build"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0"
